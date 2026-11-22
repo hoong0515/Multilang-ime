@@ -30,6 +30,11 @@ KO_PARTICLES = set("""을 를 이 가 은 는 의 에 에서 으로 로 와 과 
 JA_PARTICLES = set("""を が に で は の と も へ から まで より って です だ じゃ な っぽい する して した さん くん ちゃん
 とか みたい だけ しか でも では には とは のは を する すき がすき""".split())
 PARTICLES = {"ko": KO_PARTICLES, "ja": JA_PARTICLES}
+# 영어 바로 뒤에 붙는 일본어 조사 (Folioの, LiDARを, illと, cmに)
+JA_EDGE = ("の", "を", "が", "は", "に", "で", "と", "も", "へ", "や", "から", "まで", "より", "って", "など")
+JA_TAIL = JA_PARTICLES | {"には", "では", "とは", "への", "での", "からの", "までの", "にも", "へと", "とか", "なら"}
+LOWER_AFTER_CAPS = re.compile(r"[A-Z]{2,}[a-z]{3,}$")  # LiDARwonose, APIgun 처럼 약어 뒤로 소문자가 길게 붙은 모양
+LATTICE_K = 3  # 위치·언어마다 남길 경로 수 (후보창에 다양한 분할을 올리기 위해)
 # 한 토큰 안에서 바로 이어지지 않는 언어 쌍 (한국어와 일본어를 붙여 치는 경우는 없다고 본다)
 NO_SPLIT = {("ko", "ja"), ("ja", "ko")}
 
@@ -50,6 +55,10 @@ class Params:
     min_split: int = 1          # 분할 시 각 부분 최소 키 수
     ja_dict: float = 1.0        # 일본어 사전 보너스 (읽기 zipf 당)
     ja_leftover: float = 5.0    # 가나가 되지 못한 로마자 1글자당 벌점
+    lower_suffix_max: int = 14  # 소문자 영어 뒤에 붙는 한국어 어미의 최대 키 수 (vga카드로는)
+    lower_en_split: float = 2.0 # 소문자 영어 + 한국어·일본어 분할 추가 벌점
+    case_shape: float = 4.0     # 약어 뒤로 소문자가 길게 붙은 영어 모양 벌점
+    ja_edge: float = 3.0        # 영어 바로 뒤 일본어 구간이 조사로 시작하면 보너스
     caps_en: float = 8.0        # 전부 대문자인 구간(ESG, NFT)을 영어로 볼 때 보너스
     short_switch: float = 3.0   # 짧은 토큰(4키 이하, 전부 대문자 제외)에서 언어가 바뀔 때 추가 벌점 (to, no, au)
     switch_cjk: float = 3.0     # 토큰 사이에서 한국어<->일본어로 바뀔 때 추가 벌점
@@ -144,6 +153,8 @@ class Detector:
         s += self.p.en_dict * max(0.0, z - self.p.zipf_floor)
         if keys.isupper() and (len(keys) >= 2 or keys not in KO_SHIFT_KEYS):
             s += self.p.caps_en  # 전부 대문자: 약어일 가능성이 높다
+        elif LOWER_AFTER_CAPS.search(keys):
+            s -= self.p.case_shape
         self._memo[k] = s
         return s
 
@@ -217,13 +228,19 @@ class Detector:
             return keys[j].isupper()
         return any(ch.isupper() for ch in keys[j:j + 4])
 
-    def _lattice(self, keys: str, start: str) -> dict[str, tuple[float, list[tuple[str, int, int]]]]:
-        """start 언어로 시작해 토큰을 언어 구간들로 나누는 최선 경로 (끝 언어별)."""
+    def _lattice(self, keys: str, start: str) -> list[tuple[float, list[tuple[str, int, int]]]]:
+        """start 언어로 시작해 토큰을 언어 구간들로 나누는 경로들 (위치·언어마다 상위 LATTICE_K개)."""
         n = len(keys)
         ms = self.p.min_split
-        best: list[dict[str, tuple[float, list]]] = [dict() for _ in range(n + 1)]
+        best: list[dict[str, list[tuple[float, list]]]] = [dict() for _ in range(n + 1)]
         upper = [ch.isupper() for ch in keys]
         entry = {l: [self._en_entry(keys, j, l) for j in range(n)] + [True] for l in ("ko", "ja")}  # 끝은 항상 허용
+
+        def push(k: int, lang: str, v: float, path: list):
+            lst = best[k].setdefault(lang, [])
+            lst.append((v, path))
+            lst.sort(key=lambda x: -x[0])
+            del lst[LATTICE_K:]
 
         def min_len(lang: str) -> int:
             return ms if lang == "en" else max(ms, 2)  # 한국어·일본어 조각은 2키 이상 (WalkinㅎCat 방지)
@@ -236,43 +253,54 @@ class Detector:
                 return entry[lang][j]    # 한국어·일본어 다음은 영어뿐
             if any(upper[i:j]):
                 return True              # 대문자가 있는 영어 다음은 어디서든
-            return "ko" in self.langs and n - j <= 8  # 소문자 영어 다음은 짧은 한국어 조사·어미만
+            # 소문자 영어 다음은 토큰 끝까지 이어지는 한국어 어미나 일본어 조사뿐
+            return ("ko" in self.langs and n - j <= self.p.lower_suffix_max) or                    ("ja" in self.langs and n - j <= 8)
 
         for j in range(min_len(start), n + 1):
             if may_end(start, 0, j):
-                best[j][start] = (self.score(start, keys[:j]), [(start, 0, j)])
+                push(j, start, self.score(start, keys[:j]), [(start, 0, j)])
         for j in range(ms, n - ms + 1):
-            for l, (sc, path) in list(best[j].items()):
-                for l2 in self.langs:
-                    if l2 == l or (l, l2) in NO_SPLIT:
-                        continue
-                    if l2 == "en" and not entry[l][j]:  # 영어로 바뀌는 지점은 대문자 근처만
-                        continue
-                    ks = range(j + min_len(l2), n + 1)
-                    if l == "en" and not any(upper[path[-1][1]:j]):
-                        # 소문자 영어 뒤에는 짧은 한국어 조사·어미로 토큰이 끝나는 경우만 (reactdptj -> react에서)
-                        if n - j > 8 or l2 != "ko":
+            for l, lst in list(best[j].items()):
+                for sc, path in list(lst):
+                    for l2 in self.langs:
+                        if l2 == l or (l, l2) in NO_SPLIT:
                             continue
-                        ks = [n]
-                    for k in ks:
-                        if not may_end(l2, j, k):
+                        if l2 == "en" and not entry[l][j]:  # 영어로 바뀌는 지점은 대문자 근처만
                             continue
-                        seg = keys[j:k]
-                        v = sc + self._suffix(l2, seg) - self.p.split
-                        cur = best[k].get(l2)
-                        if cur is None or v > cur[0]:
-                            best[k][l2] = (v, path + [(l2, j, k)])
-        return best[n]
+                        ks = range(j + min_len(l2), n + 1)
+                        extra = 0.0
+                        if l == "en" and not any(upper[path[-1][1]:j]):
+                            # 소문자 영어 뒤: 토큰 끝까지 이어지는 한국어 어미(vga카드로는) 또는 일본어 조사(illと, cmに)
+                            if l2 == "ko" and n - j <= self.p.lower_suffix_max:
+                                pass
+                            elif l2 == "ja" and self.render("ja", keys[j:]) in JA_TAIL:
+                                pass
+                            else:
+                                continue
+                            ks = [n]
+                            extra = self.p.lower_en_split
+                        for k in ks:
+                            if not may_end(l2, j, k):
+                                continue
+                            seg = keys[j:k]
+                            v = sc + self._suffix(l2, seg) - self.p.split - extra
+                            if l2 == "ja" and l == "en" and self.render("ja", seg).startswith(JA_EDGE):
+                                v += self.p.ja_edge
+                            push(k, l2, v, path + [(l2, j, k)])
+        return [x for lst in best[n].values() for x in lst]
 
     def candidates(self, keys: str) -> list[Candidate]:
         n = len(keys)
         out = [Candidate(((l, n),), [Segment(l, keys, self.render(l, keys))], self.score(l, keys))
                for l in self.langs]
         if n >= 2 * self.p.min_split:
+            seen = {c.form for c in out}
             for start in self.langs:
-                for end, (sc, path) in self._lattice(keys, start).items():
-                    if len(path) < 2:
+                for sc, path in self._lattice(keys, start):
+                    form = tuple((l, j - i) for l, i, j in path)
+                    if len(path) < 2 or form in seen:
                         continue
+                    seen.add(form)
                     out.append(Candidate(
                         tuple((l, j - i) for l, i, j in path),
                         [Segment(l, keys[i:j], self.render(l, keys[i:j])) for l, i, j in path], sc))

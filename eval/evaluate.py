@@ -99,7 +99,8 @@ def balanced_score(res) -> float:
 
 RANGES = {"en_dict": (0, 3), "ko_dict": (0, 3), "zipf_floor": (0, 4), "orphan": (0, 10), "orphan_expr": (-3, 3),
           "shift_noise": (0, 8), "switch": (0, 8), "split": (0, 16), "particle": (0, 12),
-          "ja_dict": (0, 3), "ja_leftover": (0, 10), "caps_en": (2, 16), "short_switch": (0, 10), "switch_cjk": (0, 10)}
+          "ja_dict": (0, 3), "ja_leftover": (0, 10), "caps_en": (2, 16), "short_switch": (0, 10), "switch_cjk": (0, 10),
+          "lower_en_split": (0, 10), "case_shape": (0, 10), "ja_edge": (0, 8)}
 
 
 def tune(m, dev, iters, rnd, langs, start: Params):
