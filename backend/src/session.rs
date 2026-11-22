@@ -457,6 +457,10 @@ fn digit(k: &Key) -> Option<usize> {
     }
 }
 
+fn is_fullwidth_space(k: &Key) -> bool {
+    k.vk == VK_SPACE && k.shift && !k.ctrl && !k.alt
+}
+
 fn is_dash(k: &Key) -> bool {
     k.vk == VK_OEM_MINUS && !k.shift && !k.ctrl && !k.alt
 }
@@ -647,6 +651,9 @@ impl<'m> Session<'m> {
         if symbol_char(k).is_some() {
             return eat; // 기호·숫자도 조합에 넣는다 (Shift 탭으로 변형)
         }
+        if is_fullwidth_space(k) {
+            return eat; // Shift+Space: 전각 공백
+        }
         if !self.composing() || is_modifier(k.vk) {
             return Response::default();
         }
@@ -736,6 +743,15 @@ impl<'m> Session<'m> {
                     return self.respond();
                 }
             }
+        }
+        if is_fullwidth_space(k) {
+            // Shift+Space: 조합이 있으면 확정하고 전각 공백(U+3000)을 붙인다
+            let mut r = if self.composing() { self.commit("") } else { Response { eaten: true, ..Default::default() } };
+            let mut text = r.commit.take().unwrap_or_default();
+            text.push('\u{3000}');
+            r.commit = Some(text);
+            r.commit_segments.push(seg("\u{3000}", "ja"));
+            return r;
         }
         if let Some(ch) = symbol_char(k) {
             // 글자 조합, 또는 후보를 고른 기호 조합은 먼저 확정하고 기호 조합을 시작/이어 간다
@@ -1473,6 +1489,20 @@ mod tests {
         type_keys(&mut s, "go");
         assert!(s.shift_tap().candidates.is_some());
         assert!(s.parts.is_none());
+    }
+
+    #[test]
+    fn shift_space_is_fullwidth_space() {
+        let Some(m) = models() else { return };
+        let mut s = session(&m);
+        // 조합이 없을 때도 먹고 전각 공백만 넣는다
+        assert!(s.test(&key(VK_SPACE, true)).eaten);
+        assert_eq!(s.key(&key(VK_SPACE, true)).commit.as_deref(), Some("\u{3000}"));
+        // 조합 중이면 확정 + 전각 공백
+        type_keys(&mut s, "watashiha");
+        assert_eq!(s.key(&key(VK_SPACE, true)).commit.as_deref(), Some("わたしは\u{3000}"));
+        // 보통 Space는 그대로 (조합이 없으면 앱에 넘긴다)
+        assert!(!s.test(&key(VK_SPACE, false)).eaten);
     }
 
     #[test]
