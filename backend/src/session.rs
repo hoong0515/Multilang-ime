@@ -13,10 +13,20 @@
 use std::path::PathBuf;
 
 use engine::detector::{Candidate, Detector, Lang, SharedHistory};
+use engine::hangul::compose;
 use engine::model::Models;
 use ipc::{CandidateList, Key, PreeditSegment, Response};
 
 const MAX_CANDIDATES: usize = 9;
+/// 낱자로 흔히 쓰는 자모 (ㅋㅋ, ㅎㅎ, ㅠㅠ 등). 이것만 남는 후보는 정상 후보로 본다.
+const EXPRESSIVE_JAMO: &str = "ㅋㅎㅠㅜㄷㅇㄱㅅㅂㅈㄴㅊ";
+
+/// 한국어 구간에 완성되지 않은 글자(표현용 낱자모 제외)가 섞인 후보인가 (예: gㅐ, ㅗ디).
+fn has_broken_hangul(c: &Candidate) -> bool {
+    c.segments.iter().any(|s| {
+        s.lang == Some(Lang::Ko) && compose(&s.keys).orphan_list.iter().any(|j| !EXPRESSIVE_JAMO.contains(*j))
+    })
+}
 const PICK_KEYS: u16 = 5; // 숫자 1~5
 
 pub struct Session<'m> {
@@ -134,11 +144,14 @@ impl<'m> Session<'m> {
         }
         match k.vk {
             VK_BACK => {
+                // 후보창이 있으면: 창을 닫고 친 키 그대로(로마자)로 보인다
+                // 후보창이 없으면: 직전에 친 키 하나를 지운다 (조합이 없을 때는 test에서 먹지 않아 앱이 글자를 지움)
                 if self.open.is_some() {
                     self.open = None;
-                } else if self.pinned.is_some() {
                     self.pinned = None;
+                    self.raw = true;
                 } else {
+                    self.pinned = None;
                     self.keys.pop();
                     if self.keys.is_empty() {
                         self.raw = false;
@@ -213,7 +226,9 @@ impl<'m> Session<'m> {
                 out.push(c.clone());
             }
         }
-        out
+        // 완성되지 않은 한국어 글자가 섞인 후보는 뒤로 (ㅋㅋ·ㅎㅎ·ㅠㅠ 같은 표현은 그대로)
+        let (good, broken): (Vec<Candidate>, Vec<Candidate>) = out.into_iter().partition(|c| !has_broken_hangul(c));
+        good.into_iter().chain(broken).collect()
     }
 
     /// 지금 표시할 후보: 후보창 선택 > 숫자로 고른 후보 > 자동 판정. (raw는 None)
@@ -279,6 +294,29 @@ impl<'m> Session<'m> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn broken_hangul_candidates_go_last() {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/engine_model.json");
+        let Ok(m) = Models::load(&p) else { return };
+        let mut s = Session::new(&m, std::sync::Arc::new(std::sync::Mutex::new(engine::detector::History::default())), None);
+        for ch in "go".chars() {
+            s.key(&Key { vk: ch.to_ascii_uppercase() as u16, shift: false, caps: false, ctrl: false, alt: false });
+        }
+        let items = s.shift_tap().candidates.expect("window").items;
+        let first_broken = items.iter().position(|t| t.contains('ㅐ') || t.contains('ㅗ'));
+        let last_good = items.iter().rposition(|t| !t.chars().any(|c| ('ㅏ'..='ㅣ').contains(&c)));
+        if let (Some(b), Some(g)) = (first_broken, last_good) {
+            assert!(b > g, "{items:?}");
+        }
+        // ㅋㅋ 같은 표현은 낮추지 않는다
+        let mut s2 = Session::new(&m, std::sync::Arc::new(std::sync::Mutex::new(engine::detector::History::default())), None);
+        for ch in "zz".chars() {
+            s2.key(&Key { vk: ch.to_ascii_uppercase() as u16, shift: false, caps: false, ctrl: false, alt: false });
+        }
+        let items = s2.shift_tap().candidates.expect("window").items;
+        assert_eq!(items[0], "ㅋㅋ", "{items:?}");
+    }
+
     use super::*;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
@@ -347,8 +385,14 @@ mod tests {
         assert!(r.preedit[0].focused);
         let second = list.items[1].clone();
         assert_ne!(first, second);
-        // Backspace: 후보창 닫고 자동 결과로
-        assert_eq!(s.key(&key(VK_BACK, false)).preedit_text(), first);
+        // Backspace: 후보창 닫고 친 키 그대로(로마자)
+        let r = s.key(&key(VK_BACK, false));
+        assert_eq!(r.preedit_text(), "go");
+        assert_eq!(r.preedit[0].lang, "raw");
+        assert!(r.candidates.is_none());
+        // 친 키 그대로 보기에서 Esc 두 번이면 취소되므로, 자동 결과로 돌아가려면 Esc 한 번 뒤 다시 친다
+        s.reset();
+        assert_eq!(type_keys(&mut s, "go").preedit_text(), first);
         // 다시 열고 숫자 2로 고른 뒤 Space로 확정
         s.shift_tap();
         assert_eq!(s.key(&key(0x32, false)).preedit_text(), second);
