@@ -1,4 +1,4 @@
-# 다음 작업 목록 (2026-11-23 기준)
+﻿# 다음 작업 목록 (2026-11-23 기준)
 
 현재 상태: v1 M1~M4 완료, M5 진행 중. 사용자 평가로는 기본 동작(한·영·일 자동 전환, 후보창, 일본어 Mozc 변환)은 원하는 대로 된다. 남은 것은 아래 순서로 진행한다.
 
@@ -42,6 +42,7 @@
 5. **메모장 등에서 일본어 글자 깨짐** — 2026-11-23 진행 기록:
    - 프로필 전환(`ITfInputProcessorProfileMgr::ActivateProfile`, flags 0)은 E_INVALIDARG로 실패. 입력기 표시가 바뀌는 부작용도 있어 사용자 요청으로 보류하고 코드는 되돌림 (다시 하면 TF_IPPMF_FORPROCESS/FORSESSION 플래그부터 시험).
    - 우회: 글꼴. 설치 글꼴 확인 결과 (한 気 ー あ 学): 맑은 고딕 O x x O x, Noto Sans KR O O O O O, Yu Gothic·Meiryo·BIZ UD·Noto Sans JP는 한글 없음. 메모장 글꼴을 Noto Sans KR(또는 Noto Sans CJK KR, 본고딕)로 하면 한국어 프로필 그대로 일본어도 그려질 것으로 예상 — 메모장 실측: 사용자가 메모장 글꼴을 Noto Sans KR로 바꾸니 잘 표시됨 (2026-11-23). → 설치 안내에 "한·일 글자가 모두 있는 글꼴(Noto Sans KR, 본고딕 등)" 권장을 넣는다.
+   - 가짜 입력 언어 알림 실험 (2026-11-23): 일본어를 넣기 직전 RichEdit 창(RichEditD2DPT)에 WM_INPUTLANGCHANGE(SHIFTJIS_CHARSET, HKL 0x04110411)를 보냈지만 효과 없음 — 메모장은 알림이 아니라 실제 키보드 언어를 본다. 코드 되돌림. 남은 우회는 API 가로채기(권하지 않음)뿐이라 글꼴 안내로 확정.
    - 원인: 앱이 입력 중인 프로필의 언어로 글꼴을 고른다. 우리 TIP는 한국어 프로필이라 気·ー 등이 맑은 고딕으로 그려져 깨진다. `GUID_PROP_LANGID`는 무시된다.
    - 시험할 것: 일본어 구간을 넣을 때 같은 TIP의 일본어 프로필로 전환 (`ITfInputProcessorProfileMgr::ActivateProfile`). 조합이 끊기지 않는지, 전환 깜빡임이 없는지 확인.
    - 대안: 기본 프로필을 일본어로 (한국어는 조합 중에만 네모, 확정 후 정상).
