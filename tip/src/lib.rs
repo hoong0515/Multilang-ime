@@ -29,7 +29,7 @@ use windows::Win32::Foundation::{
     CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, E_POINTER, HMODULE, LPARAM, RECT, S_FALSE, S_OK, WPARAM,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, IClassFactory, IClassFactory_Impl, CLSCTX_INPROC_SERVER,
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, IClassFactory, IClassFactory_Impl, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
@@ -38,11 +38,12 @@ use windows::Win32::System::Registry::{
     REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
-use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4};
+use windows::Win32::System::Variant::{VariantClear, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4, VT_UNKNOWN};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, HKL, VK_CAPITAL, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    GetFocus, GetKeyState, HKL, VK_CAPITAL, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::TextServices::*;
+use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowLongW, GWL_STYLE};
 
 // ---------------------------------------------------------------- 식별자
 pub const CLSID_TEXT_SERVICE: GUID = GUID::from_u128(0x05c49e35_3b3f_4bc3_8d48_ef1336f9cd4d);
@@ -316,7 +317,14 @@ impl TextService_Impl {
             atoms,
         }
         .into();
-        let hr = unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
+        let hr = match unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READWRITE) } {
+            Ok(hr) => hr,
+            Err(e) => {
+                debug_note(&format!("edit session failed {e:?}"));
+                return Err(e);
+            }
+        };
+        debug_note(&format!("edit session hr {hr:?} commit={:?} preedit={:?}", resp.commit, resp.preedit_text()));
         *self.shown.borrow_mut() = resp.preedit_text();
         self.window_open.set(resp.candidates.is_some() && !resp.preedit.is_empty());
         // 후보창: 응답에 후보가 있으면 조합 아래에 띄우고, 없으면 숨긴다
@@ -325,6 +333,48 @@ impl TextService_Impl {
             _ => candwin::hide(),
         }
         hr.ok()
+    }
+
+    /// 지금 입력칸에서 IME를 꺼야 하는가: 앱이 키보드를 꺼 둔 문맥, 빈 문맥, 또는 비밀번호·숫자 등 용도의 칸.
+    fn input_off(&self, context: &ITfContext) -> bool {
+        if compartment_on(context, &GUID_COMPARTMENT_KEYBOARD_DISABLED) || compartment_on(context, &GUID_COMPARTMENT_EMPTYCONTEXT) {
+            debug_note("input off: disabled/empty context");
+            return true;
+        }
+        // 옛 Win32 입력칸(CUAS 경유)은 용도 속성을 읽을 수 없어 창 스타일로 본다: 숫자 전용, 비밀번호
+        let hwnd = unsafe { GetFocus() };
+        if !hwnd.0.is_null() {
+            let mut buf = [0u16; 64];
+            let n = unsafe { GetClassNameW(hwnd, &mut buf) } as usize;
+            let class = String::from_utf16_lossy(&buf[..n]).to_ascii_lowercase();
+            if class == "edit" || class.starts_with("windowsforms10.edit") {
+                const ES_PASSWORD: u32 = 0x0020;
+                const ES_NUMBER: u32 = 0x2000;
+                let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+                if style & (ES_PASSWORD | ES_NUMBER) != 0 {
+                    debug_note("input off: edit style");
+                    return true;
+                }
+            }
+        }
+        let Ok(client_id) = self.state.try_borrow().map(|s| s.client_id) else { return false };
+        let out = Rc::new(Cell::new(None));
+        let session: ITfEditSession = ScopeSession { context: context.clone(), out: out.clone() }.into();
+        match unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READ) } {
+            Ok(hr) if hr.is_err() => debug_note(&format!("scope session hr {hr:?}")),
+            Err(e) => {
+                debug_note(&format!("scope session failed {e:?}"));
+                return false;
+            }
+            _ => {}
+        }
+        let scopes = out.take().unwrap_or_default();
+        // 첫 번째(주된) 용도로 판단한다 (예: 검색칸은 IS_SEARCH, 이메일칸은 IS_EMAIL_SMTPEMAILADDRESS)
+        let off = scopes.first().is_some_and(|s| OFF_SCOPES.contains(s));
+        if off || !scopes.is_empty() {
+            debug_note(&format!("input scopes {scopes:?} -> off={off}"));
+        }
+        off
     }
 
     fn composing(&self) -> bool {
@@ -402,10 +452,15 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     }
 
     /// 키를 먹을지 묻기만 한다 (상태를 바꾸지 않음). TSF는 보통 이 단계 없이 OnKeyDown을 바로 부른다.
-    fn OnTestKeyDown(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+    fn OnTestKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         debug_log("TestKeyDown", wparam, lparam);
         if is_left_shift(wparam, lparam) {
             return Ok(false.into());
+        }
+        if let Ok(ctx) = pic.ok() {
+            if !self.composing() && self.input_off(ctx) {
+                return Ok(false.into());
+            }
         }
         let Some(t) = self.call(&Request::Test { key: current_key(wparam) }) else {
             return Ok(false.into());
@@ -429,6 +484,10 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             s.shift_down = None; // 다른 키가 끼면 탭이 아니다 (Shift+글자 = 대문자)
         }
         let Ok(ctx) = pic.ok() else { return Ok(false.into()) };
+        // 비밀번호·숫자 칸 등: 조합을 시작하지 않고 키를 앱에 그대로 넘긴다
+        if !self.composing() && self.input_off(ctx) {
+            return Ok(false.into());
+        }
         let key = current_key(wparam);
         if is_modifier_vk(key.vk) {
             return Ok(false.into());
@@ -520,6 +579,88 @@ impl ITfCompositionSink_Impl for TextService_Impl {
 }
 
 // ---------------------------------------------------------------- 편집 세션
+// ---------------------------------------------------------------- 자동 꺼짐
+/// IME를 쓰지 않는 입력칸 용도 (비밀번호·PIN, 숫자·전화·금액, 이메일·로그인 이름, URL, 반각 영숫자).
+const OFF_SCOPES: &[i32] = &[
+    IS_URL.0,
+    IS_EMAIL_USERNAME.0,
+    IS_EMAIL_SMTPEMAILADDRESS.0,
+    IS_LOGINNAME.0,
+    IS_CURRENCY_AMOUNT.0,
+    IS_DIGITS.0,
+    IS_NUMBER.0,
+    IS_PASSWORD.0,
+    IS_TELEPHONE_FULLTELEPHONENUMBER.0,
+    IS_TELEPHONE_COUNTRYCODE.0,
+    IS_TELEPHONE_AREACODE.0,
+    IS_TELEPHONE_LOCALNUMBER.0,
+    IS_ALPHANUMERIC_HALFWIDTH.0,
+    IS_NUMERIC_PASSWORD.0,
+    IS_NUMERIC_PIN.0,
+    IS_ALPHANUMERIC_PIN.0,
+];
+
+/// 문맥의 compartment 값이 켜져 있는가 (키보드 비활성, 빈 문맥).
+fn compartment_on(context: &ITfContext, guid: &GUID) -> bool {
+    (|| -> Result<bool> {
+        let mgr: ITfCompartmentMgr = context.cast()?;
+        let c = unsafe { mgr.GetCompartment(guid)? };
+        let mut v = unsafe { c.GetValue()? };
+        let on = unsafe { v.Anonymous.Anonymous.vt == VT_I4 && v.Anonymous.Anonymous.Anonymous.lVal != 0 };
+        unsafe {
+            let _ = VariantClear(&mut v);
+        }
+        Ok(on)
+    })()
+    .unwrap_or(false)
+}
+
+/// 커서 자리의 입력칸 용도(InputScope)를 읽는 읽기 전용 편집 세션.
+#[implement(ITfEditSession)]
+struct ScopeSession {
+    context: ITfContext,
+    out: Rc<Cell<Option<Vec<i32>>>>,
+}
+
+impl ITfEditSession_Impl for ScopeSession_Impl {
+    fn DoEditSession(&self, ec: u32) -> Result<()> {
+        let mut sel = [TF_SELECTION::default()];
+        let mut n = 0u32;
+        unsafe { self.context.GetSelection(ec, TF_DEFAULT_SELECTION, &mut sel, &mut n) }
+            .inspect_err(|e| debug_note(&format!("scope: GetSelection {e:?}")))?;
+        if n == 0 {
+            return Ok(());
+        }
+        let Some(range) = (unsafe { ManuallyDrop::take(&mut sel[0].range) }) else { return Ok(()) };
+        let prop = unsafe { self.context.GetAppProperty(&GUID_PROP_INPUTSCOPE) }
+            .inspect_err(|e| debug_note(&format!("scope: GetAppProperty {e:?}")))?;
+        let mut v = unsafe { prop.GetValue(ec, &range) }.inspect_err(|e| debug_note(&format!("scope: GetValue {e:?}")))?;
+        let unk = unsafe {
+            if v.Anonymous.Anonymous.vt == VT_UNKNOWN { (*v.Anonymous.Anonymous.Anonymous.punkVal).clone() } else { None }
+        };
+        unsafe {
+            let _ = VariantClear(&mut v);
+        }
+        let Some(unk) = unk else {
+            self.out.set(Some(Vec::new()));
+            return Ok(());
+        };
+        let scope: ITfInputScope = unk.cast().inspect_err(|e| debug_note(&format!("scope: cast {e:?}")))?;
+        let mut p: *mut InputScope = std::ptr::null_mut();
+        let mut count = 0u32;
+        unsafe { scope.GetInputScopes(&mut p, &mut count) }.inspect_err(|e| debug_note(&format!("scope: GetInputScopes {e:?}")))?;
+        let mut list = Vec::new();
+        if !p.is_null() {
+            for i in 0..count as usize {
+                list.push(unsafe { (*p.add(i)).0 });
+            }
+            unsafe { CoTaskMemFree(Some(p as *const c_void)) };
+        }
+        self.out.set(Some(list));
+        Ok(())
+    }
+}
+
 #[implement(ITfEditSession)]
 struct EditSession {
     context: ITfContext,

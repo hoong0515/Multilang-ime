@@ -260,6 +260,18 @@ python poc/mozc/run_poc.py
 - Shift+Space: 전각 공백(U+3000). 조합 중이면 확정하고 붙인다. 보통 Space는 그대로 (한·영은 확정+공백, 일본어 문맥은 공백 없이 확정, 조합이 없으면 앱에 넘김).
 - 메모장 일본어 글자 깨짐: 한국어 프로필 TIP로 넣은 글은 메모장이 한국어 글꼴로 그린다. 메모장 글꼴을 한·일 글자가 모두 있는 Noto Sans KR로 바꾸면 잘 표시된다 (사용자 확인). 프로필 전환 방식은 보류.
 
+## 자동 꺼짐 (2026-11-23)
+
+- 조합 중이 아닐 때 키가 오면 입력칸을 확인하고, IME를 쓰지 않을 칸이면 키를 먹지 않고 앱에 넘긴다 (`tip/src/lib.rs` `input_off`).
+  - 앱이 키보드를 꺼 둔 문맥·빈 문맥 (`GUID_COMPARTMENT_KEYBOARD_DISABLED`, `GUID_COMPARTMENT_EMPTYCONTEXT`).
+  - 입력칸 용도 (`GetAppProperty(GUID_PROP_INPUTSCOPE)`의 첫 용도): URL, 이메일·로그인 이름, 숫자·전화·금액, 비밀번호·PIN, 반각 영숫자.
+  - 옛 Win32 입력칸(Edit, WinForms TextBox): 창 스타일 ES_NUMBER / ES_PASSWORD.
+  - 브라우저는 한 문맥 안에서 칸이 바뀌므로 저장하지 않고 매번 확인한다 (읽기 전용 동기 편집 세션, 조합 시작 키에서만).
+- 시험 창 `tools/ImeScopeTest.cs` (일반 / 비밀번호 / 숫자 / 이메일 칸): `Add-Type -TypeDefinition (Get-Content tools\ImeScopeTest.cs -Raw) -ReferencedAssemblies System.Windows.Forms -OutputAssembly target\imetest\ImeScopeTest.exe -OutputType WindowsApplication`
+- 실측: 이메일 칸 용도 [5] → 꺼짐, 숫자 전용 칸 → 꺼짐, 비밀번호 칸은 Windows가 처음부터 IME에 키를 보내지 않음. 메모장 평소 입력 정상.
+- 처음에 `GetProperty`로 읽어 늘 실패했다. 입력칸 용도는 앱 속성이라 `GetAppProperty`로 읽어야 한다.
+- **새로 발견한 문제**: 옛 Win32 입력칸(CUAS 경유, 예: WinForms TextBox)에서는 키마다 조합이 끊겨 백엔드가 매번 처음부터 시작한다 (미리보기가 d → k → s 한 글자씩). 메모장(TSF 지원 RichEdit)은 정상. 다음 작업으로 조사 필요.
+
 ## 알려진 한계
 
 - 한국어 모델은 wordfreq의 형태소 단위 목록이라 어절 패턴이 약하다.
