@@ -139,6 +139,8 @@ struct State {
     anchor: Option<RECT>,
     /// 왼쪽 Shift를 누른 시각 (그 뒤 다른 키가 오면 None).
     shift_down: Option<Instant>,
+    /// 조합 창 모드의 조합 문자열과 그 문맥 (옛 입력칸: 조합을 입력칸에 넣지 않는다)
+    floating: Option<(String, usize)>,
 }
 
 #[implement(ITfTextInputProcessorEx, ITfTextInputProcessor, ITfKeyEventSink, ITfCompositionSink, ITfDisplayAttributeProvider)]
@@ -303,6 +305,7 @@ impl TextService_Impl {
 
     /// 동기 편집 세션으로 응답(확정·조합)을 문서에 반영한다 (키 이벤트 콜백 안에서만 호출).
     fn apply(&self, context: &ITfContext, resp: &Response) -> Result<()> {
+        let floating = transitory(context);
         let atoms = self.atoms();
         let client_id = self.state.try_borrow().map(|s| s.client_id).map_err(|_| E_FAIL)?;
         let sink: ITfCompositionSink = self.to_interface();
@@ -315,6 +318,7 @@ impl TextService_Impl {
             preedit: resp.preedit_text(),
             segments: resp.preedit.clone(),
             atoms,
+            floating,
         }
         .into();
         let hr = match unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READWRITE) } {
@@ -327,8 +331,26 @@ impl TextService_Impl {
         debug_note(&format!("edit session hr {hr:?} commit={:?} preedit={:?}", resp.commit, resp.preedit_text()));
         *self.shown.borrow_mut() = resp.preedit_text();
         self.window_open.set(resp.candidates.is_some() && !resp.preedit.is_empty());
+        let anchor = self.state.try_borrow().ok().and_then(|s| s.anchor);
+        if floating {
+            // 조합 창 모드: 조합 문자열과 후보를 커서 아래 창에 보인다 (부분 변환 중이면 고치는 부분을 [ ]로)
+            let text = resp.preedit_text();
+            let shown_text = if resp.preedit.len() > 1 && resp.preedit.iter().any(|p| p.focused) {
+                resp.preedit.iter().map(|p| if p.focused { format!("[{}]", p.text) } else { p.text.clone() }).collect::<String>()
+            } else {
+                text.clone()
+            };
+            if let Ok(mut s) = self.state.try_borrow_mut() {
+                s.floating = if text.is_empty() { None } else { Some((text.clone(), context.as_raw() as usize)) };
+            }
+            match anchor {
+                Some(a) if !text.is_empty() => candwin::show_floating(&shown_text, resp.candidates.as_ref(), a),
+                _ => candwin::hide(),
+            }
+            return hr.ok();
+        }
         // 후보창: 응답에 후보가 있으면 조합 아래에 띄우고, 없으면 숨긴다
-        match (&resp.candidates, self.state.try_borrow().ok().and_then(|s| s.anchor)) {
+        match (&resp.candidates, anchor) {
             (Some(list), Some(anchor)) if !resp.preedit.is_empty() => candwin::show(list, anchor),
             _ => candwin::hide(),
         }
@@ -378,12 +400,13 @@ impl TextService_Impl {
     }
 
     fn composing(&self) -> bool {
-        self.state.try_borrow().map(|s| s.composition.is_some()).unwrap_or(false)
+        self.state.try_borrow().map(|s| s.composition.is_some() || s.floating.is_some()).unwrap_or(false)
     }
 
     fn reset(&self) {
         if let Ok(mut s) = self.state.try_borrow_mut() {
             s.composition = None;
+            s.floating = None;
         }
         self.journal.borrow_mut().clear();
         self.shown.borrow_mut().clear();
@@ -437,6 +460,10 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
             s.thread_mgr = Some(tm.clone());
             s.client_id = tid;
         }
+        // IME 켜짐 + 입력 모드(고유 문자) 표시. 옛 입력칸(CUAS)은 이 표시가 꺼져 있으면 IME가 꺼진 것으로 보고
+        // 조합을 키마다 끝내 버린다 (MS 한국어 IME도 한글 모드에서 켠다).
+        set_thread_compartment(&tm, tid, &GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, 1);
+        set_thread_compartment(&tm, tid, &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, TF_CONVERSIONMODE_NATIVE as i32);
         let km: ITfKeystrokeMgr = tm.cast()?;
         let sink: ITfKeyEventSink = self.to_interface();
         unsafe { km.AdviseKeyEventSink(tid, &sink, true) }
@@ -454,6 +481,17 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     /// 키를 먹을지 묻기만 한다 (상태를 바꾸지 않음). TSF는 보통 이 단계 없이 OnKeyDown을 바로 부른다.
     fn OnTestKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         debug_log("TestKeyDown", wparam, lparam);
+        // Shift 탭 판정용 시각 기록 (옛 입력칸(CUAS)에서는 Shift에 대해 OnKeyDown 없이 이것만 불린다)
+        let repeat = (lparam.0 as u32 >> 30) & 1 == 1;
+        if let Ok(mut s) = self.state.try_borrow_mut() {
+            if is_left_shift(wparam, lparam) {
+                if !repeat {
+                    s.shift_down = Some(Instant::now());
+                }
+            } else {
+                s.shift_down = None;
+            }
+        }
         if is_left_shift(wparam, lparam) {
             return Ok(false.into());
         }
@@ -484,6 +522,11 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             s.shift_down = None; // 다른 키가 끼면 탭이 아니다 (Shift+글자 = 대문자)
         }
         let Ok(ctx) = pic.ok() else { return Ok(false.into()) };
+        // 조합 창 모드의 조합이 다른 입력칸 것이면 (포커스 이동) 버린다
+        let stale = self.state.try_borrow().ok().and_then(|s| s.floating.as_ref().map(|f| f.1)).is_some_and(|p| p != ctx.as_raw() as usize);
+        if stale {
+            self.reset();
+        }
         // 비밀번호·숫자 칸 등: 조합을 시작하지 않고 키를 앱에 그대로 넘긴다
         if !self.composing() && self.input_off(ctx) {
             return Ok(false.into());
@@ -573,6 +616,7 @@ impl ITfDisplayAttributeProvider_Impl for TextService_Impl {
 impl ITfCompositionSink_Impl for TextService_Impl {
     /// 앱이 조합을 강제로 끝냈을 때 (클릭으로 커서 이동 등): 표시된 대로 확정된 것으로 보고 백엔드 상태를 비운다.
     fn OnCompositionTerminated(&self, _ecwrite: u32, _pcomposition: Ref<ITfComposition>) -> Result<()> {
+        debug_note("composition terminated by app");
         self.reset();
         Ok(())
     }
@@ -599,6 +643,24 @@ const OFF_SCOPES: &[i32] = &[
     IS_NUMERIC_PIN.0,
     IS_ALPHANUMERIC_PIN.0,
 ];
+
+/// CUAS를 거치는 옛 Win32 입력칸의 문맥인가 (TS_SS_TRANSITORY). 이런 칸은 한국어 프로필에서 조합 글자를
+/// 한 글자(interim)만 허용해 여러 글자 조합이 키마다 끊기므로, 조합을 입력칸 대신 조합 창에 띄운다.
+fn transitory(context: &ITfContext) -> bool {
+    unsafe { context.GetStatus() }.map(|st| st.dwStaticFlags & TS_SS_TRANSITORY != 0).unwrap_or(false)
+}
+
+/// 스레드 관리자의 compartment에 정수 값을 쓴다.
+fn set_thread_compartment(tm: &ITfThreadMgr, tid: u32, guid: &GUID, value: i32) {
+    let r = (|| -> Result<()> {
+        let mgr: ITfCompartmentMgr = tm.cast()?;
+        let c = unsafe { mgr.GetCompartment(guid)? };
+        unsafe { c.SetValue(tid, &variant_i4(value)) }
+    })();
+    if let Err(e) = r {
+        debug_note(&format!("compartment set failed: {e:?}"));
+    }
+}
 
 /// 문맥의 compartment 값이 켜져 있는가 (키보드 비활성, 빈 문맥).
 fn compartment_on(context: &ITfContext, guid: &GUID) -> bool {
@@ -671,6 +733,8 @@ struct EditSession {
     preedit: String,
     segments: Vec<PreeditSegment>,
     atoms: Option<(u32, u32, u32)>,
+    /// 조합 창 모드 (옛 입력칸): 조합을 입력칸에 넣지 않고 확정 글만 넣는다
+    floating: bool,
 }
 
 fn variant_i4(v: i32) -> VARIANT {
@@ -701,6 +765,7 @@ impl EditSession {
         let range = unsafe { ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])? };
         let cc: ITfContextComposition = self.context.cast()?;
         let comp = unsafe { cc.StartComposition(ec, &range, &self.sink)? };
+        debug_note("composition started");
         self.state.try_borrow_mut().map_err(|_| E_FAIL)?.composition = Some(comp.clone());
         Ok(comp)
     }
@@ -825,6 +890,21 @@ impl ITfEditSession_Impl for EditSession_Impl {
                 }
                 None => {}
             }
+        }
+        // 2-a) 조합 창 모드: 입력칸에는 조합을 넣지 않고, 커서 위치만 기록한다 (조합 창을 띄울 곳)
+        if self.floating {
+            if let Some(comp) = self.composition() {
+                let range = unsafe { comp.GetRange()? };
+                unsafe { range.SetText(ec, 0, &[])? };
+                self.end_composition(ec, &comp)?;
+            }
+            if !self.preedit.is_empty() {
+                let ins: ITfInsertAtSelection = self.context.cast()?;
+                if let Ok(range) = unsafe { ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[]) } {
+                    self.remember_anchor(ec, &range);
+                }
+            }
+            return Ok(());
         }
         // 2) 조합: 남은 조합이 있으면 표시, 없으면 (확정 없이 끝난 경우) 조합을 지우고 끝낸다.
         if !self.preedit.is_empty() {
