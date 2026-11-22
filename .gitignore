@@ -1,0 +1,7 @@
+data/private/
+data/models.pkl
+__pycache__/
+.pytest_cache/
+data/public/
+third_party/
+poc/mozc/gen/
