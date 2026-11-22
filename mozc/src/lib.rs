@@ -42,7 +42,7 @@ use windows::Win32::System::Threading::{
     CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
-use mozc::commands::{input, key_event, session_command, CompositionMode, Input, KeyEvent, Output, SessionCommand};
+use mozc::commands::{input, key_event, session_command, CompositionMode, Context, Input, KeyEvent, Output, SessionCommand};
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -230,6 +230,8 @@ impl Client {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Conversion {
     pub segments: Vec<String>,
+    /// 문절별 읽기 (가나).
+    pub readings: Vec<String>,
     pub candidates: Vec<(i32, String)>,
 }
 
@@ -243,13 +245,15 @@ impl Conversion {
 pub struct Session {
     client: Client,
     id: u64,
+    /// 커서 앞 문맥 (변환에 쓰인다). 요청마다 함께 보낸다.
+    pub preceding_text: Option<String>,
 }
 
 impl Session {
     pub fn new(client: Client) -> Result<Self> {
         let i = Input { r#type: input::CommandType::CreateSession as i32, ..Default::default() };
         let out = client.call(&i)?;
-        let mut s = Self { client, id: out.id.unwrap_or(0) };
+        let mut s = Self { client, id: out.id.unwrap_or(0), preceding_text: None };
         let c = SessionCommand {
             r#type: session_command::CommandType::TurnOnIme as i32,
             composition_mode: Some(CompositionMode::Hiragana as i32),
@@ -259,18 +263,29 @@ impl Session {
         Ok(s)
     }
 
+    fn context(&self) -> Option<Context> {
+        self.preceding_text.as_ref().map(|t| Context { preceding_text: Some(t.clone()), ..Default::default() })
+    }
+
     fn command(&mut self, c: SessionCommand) -> Result<Output> {
         let i = Input {
             r#type: input::CommandType::SendCommand as i32,
             id: Some(self.id),
             command: Some(c),
+            context: self.context(),
             ..Default::default()
         };
         self.client.call(&i)
     }
 
     fn send_key(&mut self, k: KeyEvent) -> Result<Output> {
-        let i = Input { r#type: input::CommandType::SendKey as i32, id: Some(self.id), key: Some(k), ..Default::default() };
+        let i = Input {
+            r#type: input::CommandType::SendKey as i32,
+            id: Some(self.id),
+            key: Some(k),
+            context: self.context(),
+            ..Default::default()
+        };
         self.client.call(&i)
     }
 
@@ -317,6 +332,15 @@ impl Session {
         self.send_key(k).map(|_| ())
     }
 
+    /// Mozc의 사용자 학습(변환 이력·예측)을 지운다.
+    pub fn clear_learning(&mut self) -> Result<()> {
+        for t in [input::CommandType::ClearUserHistory, input::CommandType::ClearUserPrediction] {
+            let i = Input { r#type: t as i32, id: Some(self.id), ..Default::default() };
+            self.client.call(&i)?;
+        }
+        Ok(())
+    }
+
     /// 지금 조합을 변환한다 (Space).
     pub fn convert_current(&mut self) -> Result<Conversion> {
         let k = KeyEvent { special_key: Some(key_event::SpecialKey::Space as i32), ..Default::default() };
@@ -348,6 +372,7 @@ impl Session {
 
 fn conversion(out: &Output) -> Conversion {
     let segments = out.preedit.as_ref().map(|p| p.segment.iter().map(|s| s.value.clone()).collect()).unwrap_or_default();
+    let readings = out.preedit.as_ref().map(|p| p.segment.iter().map(|s| s.key.clone().unwrap_or_default()).collect()).unwrap_or_default();
     let mut candidates: Vec<(i32, String)> = out
         .candidate_window
         .as_ref()
@@ -360,5 +385,5 @@ fn conversion(out: &Output) -> Conversion {
             .map(|l| l.candidates.iter().map(|c| (c.id.unwrap_or(0), c.value.clone().unwrap_or_default())).collect())
             .unwrap_or_default();
     }
-    Conversion { segments, candidates }
+    Conversion { segments, readings, candidates }
 }
