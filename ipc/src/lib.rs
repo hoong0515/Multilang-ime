@@ -31,6 +31,8 @@ pub enum Request {
     Flush,
     /// 조합을 버린다 (앱이 조합을 강제로 끝냈을 때, 포커스 이동).
     Reset,
+    /// 왼쪽 Shift를 짧게 눌렀다 뗌: 변환(다음 후보). 조합 중일 때만 보낸다.
+    ShiftTap,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -39,6 +41,18 @@ pub struct PreeditSegment {
     /// "ko" | "en" | "ja" | "other" | "raw"(Esc로 친 키 그대로 보기)
     pub lang: String,
     pub ambiguous: bool,
+    /// 후보를 고르는 중인 구간 (굵은 밑줄).
+    #[serde(default)]
+    pub focused: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct CandidateList {
+    /// 표시할 후보 (변환 결과 텍스트).
+    pub items: Vec<String>,
+    /// 각 후보의 언어 구성 설명 (예: "ko", "en+ko").
+    pub labels: Vec<String>,
+    pub selected: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
@@ -51,6 +65,9 @@ pub struct Response {
     pub preedit: Vec<PreeditSegment>,
     /// 이번에 확정된 텍스트.
     pub commit: Option<String>,
+    /// 후보창 (열려 있을 때만).
+    #[serde(default)]
+    pub candidates: Option<CandidateList>,
 }
 
 impl Response {

@@ -10,7 +10,9 @@ mod session;
 use std::ffi::c_void;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
+use engine::detector::{History, SharedHistory};
 use engine::model::Models;
 use ipc::{Request, Response};
 use session::Session;
@@ -71,15 +73,20 @@ fn read_message(h: HANDLE) -> Option<Vec<u8>> {
     }
 }
 
-fn handle_client(h: PipeHandle, models: &'static Models) {
+fn data_dir() -> PathBuf {
+    std::env::var("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("multilang-ime")
+}
+
+fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory) {
     let h = HANDLE(h.0 as *mut c_void);
-    let mut session = Session::new(models);
+    let mut session = Session::new(models, history, Some(data_dir().join("history.json")));
     while let Some(msg) = read_message(h) {
         let resp = match serde_json::from_slice::<Request>(&msg) {
             Ok(Request::Test { key }) => session.test(&key),
             Ok(Request::Key { key }) => session.key(&key),
             Ok(Request::Flush) => session.flush(),
             Ok(Request::Reset) => session.reset(),
+            Ok(Request::ShiftTap) => session.shift_tap(),
             Err(e) => {
                 log(&format!("bad request: {e}"));
                 Response::default()
@@ -114,6 +121,11 @@ fn main() {
             return;
         }
     };
+    let _ = std::fs::create_dir_all(data_dir());
+    let history: SharedHistory = Arc::new(Mutex::new(History::load(&data_dir().join("history.json"))));
+    if let Ok(h) = history.lock() {
+        log(&format!("history entries: {}", h.len()));
+    }
     let user = std::env::var("USERNAME").unwrap_or_default();
     let name = wide(&ipc::pipe_name(&user));
     log(&format!("started, pipe {}", ipc::pipe_name(&user)));
@@ -145,6 +157,7 @@ fn main() {
             continue;
         }
         let ph = PipeHandle(h.0 as isize);
-        std::thread::spawn(move || handle_client(ph, models));
+        let hist = history.clone();
+        std::thread::spawn(move || handle_client(ph, models, hist));
     }
 }

@@ -139,6 +139,16 @@ cargo build --release                     # target/release: multilang_tip.dll, b
 - 구간별 밑줄: 표시 속성 제공자(일반 실선 / 모호 점선 / 후보 선택 중 굵은 실선). 메모장에서 조합 중 실선 표시와 확정 뒤 밑줄 제거를 확인.
   모호 구간 점선은 백엔드가 모호 표시(`go`, `so`, `ah` 등)를 보내는 것까지 확인했고, 화면 해상도 문제로 점선 모양 자체는 눈으로 확인하지 못했다.
 
+## M3 후보창 (2026-11-23)
+
+- 직전 단어 언어 가중치: 같은 언어로 이어 확정한 단어 수만큼 전환 벌점을 키운다 (`MOMENTUM = 0.3`).
+  IME처럼 왼쪽 문맥만 쓰면 문장 전체 판정보다 오판이 1.2~3배 많았고(`eval/online_context.py`), 가중치로 한국어 오판을 약 10% 줄임.
+- 후보창: 왼쪽 Shift 탭으로 열기(2위 선택)·다음 후보, 숫자 1~5 선택, Space·Enter 확정, Backspace·Esc로 닫기, 열린 채 글자를 치면 선택 후보로 확정 후 새 조합.
+  조합 바로 아래에 포커스를 가져가지 않는 팝업으로 그린다 (`tip/src/candwin.rs`). 후보마다 언어 구성(en, ko, en+ko)을 함께 표시.
+- 학습: 확정한 형태를 모든 앱이 함께 쓰는 기록에 쌓고 `%LOCALAPPDATA%\multilang-ime\history.json`에 저장.
+- 메모장 실측: `go` → Shift 탭 → `1 go / 2 해 / 3 gㅐ` 후보창, Shift로 이동, Backspace로 닫기, 숫자 선택 후 Space 확정, 구두점 앞 확정 모두 확인.
+- 진단: `deployd`에 `MULTILANG_TIP_DEBUG` 파일을 두면 TIP가 키 이벤트를 `tip-debug.log`에 남긴다.
+
 ## Mozc 연동 개념 검증 (2026-11-23)
 
 공식 GitHub Actions의 Windows 빌드(`Mozc64_x64.msi`, 3.35.6354.100)를 설치하지 않고 풀어서 mozc_server만 띄우고,

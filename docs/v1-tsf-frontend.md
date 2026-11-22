@@ -59,6 +59,7 @@ Mozc의 `TipTextServiceImpl`(`win32/tip/tip_text_service.cc`)을 기준으로, v
 TSF의 키 이벤트 처리는 동기식이다 (`tip_keyevent_handler.cc`의 주석). Mozc도 `OnTestKeyDown` 안에서 서버에 동기 호출로 "이 키를 먹을지"를 묻는다. 우리도 같은 구조로 간다.
 
 1. `OnTestKeyDown`: 키 정보를 백엔드에 보내 `consumed` 여부만 받는다. 백엔드 응답 예산은 **5 ms 이내** (판정 0.2~1 ms, Mozc 키 1 ms 측정치 기준).
+   **M3 실측**: 메모장에서 TSF는 `OnTestKeyDown`/`OnTestKeyUp` 없이 `OnKeyDown`/`OnKeyUp`만 불렀다. 그래서 실제 처리(Shift 탭 기록, 구두점 앞 확정 포함)는 전부 `OnKeyDown`/`OnKeyUp`에서 하고, Test 쪽은 상태를 바꾸지 않고 먹을지만 답한다.
 2. `OnKeyDown`: 같은 키를 실제로 처리하고 출력(조합·확정·후보)을 받아, 동기 편집 세션(`TF_ES_SYNC`)으로 문서에 반영한다.
 3. 시간 초과·백엔드 없음: 키를 먹지 않는다. 사용자는 IME 없이 입력하는 상태가 되고, 백엔드는 다시 띄운다.
 

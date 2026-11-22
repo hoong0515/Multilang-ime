@@ -6,11 +6,16 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use serde::{Deserialize, Serialize};
 
 use crate::hangul::compose;
 use crate::model::{Models, Params};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Lang {
     En,
     Ko,
@@ -104,16 +109,53 @@ impl History {
         let nf = self.folded.get(&keys.to_lowercase()).and_then(|m| m.get(form)).copied().unwrap_or(0) as f64;
         ne + 0.5 * (nf - ne)
     }
+
+    /// 파일로 저장 (항목: [키 입력, 형태, 횟수]). 대소문자 무시 집계는 읽을 때 다시 만든다.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let rows: Vec<(&String, &Form, u32)> =
+            self.exact.iter().flat_map(|(k, m)| m.iter().map(move |(f, n)| (k, f, *n))).collect();
+        let text = serde_json::to_string(&rows).map_err(std::io::Error::other)?;
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, path)
+    }
+
+    pub fn load(path: &Path) -> Self {
+        let mut h = History::default();
+        let Ok(text) = std::fs::read_to_string(path) else { return h };
+        let Ok(rows) = serde_json::from_str::<Vec<(String, Form, u32)>>(&text) else { return h };
+        for (k, f, n) in rows {
+            *h.exact.entry(k.clone()).or_default().entry(f.clone()).or_default() += n;
+            *h.folded.entry(k.to_lowercase()).or_default().entry(f).or_default() += n;
+        }
+        h
+    }
+
+    pub fn len(&self) -> usize {
+        self.exact.values().map(|m| m.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.exact.is_empty()
+    }
 }
+
+/// 여러 연결(앱)이 함께 쓰는 학습 기록.
+pub type SharedHistory = Arc<Mutex<History>>;
 
 pub struct Detector<'m> {
     m: &'m Models,
     p: Params,
     pub langs: Vec<Lang>,
-    pub history: Option<History>,
+    pub history: Option<SharedHistory>,
     memo: RefCell<HashMap<(Lang, String), f64>>,
     particles_ko: HashSet<&'static str>,
+    /// 언어 전환 벌점 배율. 직전 단어들이 같은 언어로 이어질수록 키운다 (set_language_run).
+    switch_scale: f64,
 }
+
+/// 같은 언어가 이어진 단어 수에 따른 전환 벌점 가중치 (공개·트윗 데이터에서 0.3이 어느 셋도 나빠지지 않음).
+pub const MOMENTUM: f64 = 0.3;
 
 fn is_upper(s: &str) -> bool {
     // Python str.isupper(): 대소문자가 있는 글자가 하나 이상이고 모두 대문자
@@ -146,11 +188,17 @@ impl<'m> Detector<'m> {
             history: None,
             memo: RefCell::new(HashMap::new()),
             particles_ko: KO_PARTICLES.split_whitespace().collect(),
+            switch_scale: 1.0,
         }
     }
 
     pub fn params(&self) -> &Params {
         &self.p
+    }
+
+    /// 직전에 같은 언어로 확정한 단어 수(run)를 알려 준다. 길게 이어질수록 다른 언어로 바뀌기 어렵게 한다.
+    pub fn set_language_run(&mut self, run: usize) {
+        self.switch_scale = 1.0 + MOMENTUM * (run.saturating_sub(1).min(3) as f64);
     }
 
     fn memo_get(&self, lang: Lang, keys: &str) -> Option<f64> {
@@ -344,7 +392,7 @@ impl<'m> Detector<'m> {
                 }
             }
         }
-        if let Some(h) = &self.history {
+        if let Some(h) = self.history.as_ref().and_then(|h| h.lock().ok()) {
             for c in &mut out {
                 let cnt = h.count(keys, &c.form);
                 if cnt > 0.0 {
@@ -360,7 +408,7 @@ impl<'m> Detector<'m> {
         if prev == c.start() {
             return c.score;
         }
-        let mut pen = self.p.switch;
+        let mut pen = self.p.switch * self.switch_scale;
         let first = &c.segments[0].keys;
         if first.chars().count() <= 4 && !is_upper(first) {
             pen += self.p.short_switch;

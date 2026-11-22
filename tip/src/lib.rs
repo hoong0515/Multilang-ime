@@ -11,6 +11,7 @@
 
 #![allow(non_snake_case)]
 
+mod candwin;
 mod client;
 mod display;
 
@@ -19,12 +20,13 @@ use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::time::{Duration, Instant};
 
 use client::Client;
 use ipc::{Key, PreeditSegment, Request, Response};
 use windows::core::{implement, w, IUnknownImpl, Interface, Ref, BOOL, GUID, HRESULT, IUnknown, PCWSTR, Result};
 use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, E_POINTER, HMODULE, LPARAM, S_FALSE, S_OK, WPARAM,
+    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, E_POINTER, HMODULE, LPARAM, RECT, S_FALSE, S_OK, WPARAM,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, IClassFactory, IClassFactory_Impl, CLSCTX_INPROC_SERVER,
@@ -60,6 +62,10 @@ extern "system" fn DllMain(module: HMODULE, reason: u32, _reserved: *mut c_void)
     true.into()
 }
 
+pub(crate) fn module_handle() -> HMODULE {
+    HMODULE(DLL_MODULE.load(Ordering::Relaxed) as *mut c_void)
+}
+
 pub(crate) fn module_path() -> Vec<u16> {
     let module = HMODULE(DLL_MODULE.load(Ordering::Relaxed) as *mut c_void);
     let mut buf = vec![0u16; 1024];
@@ -83,14 +89,44 @@ fn current_key(wparam: WPARAM) -> Key {
     }
 }
 
+/// 왼쪽 Shift 탭: 눌렀다가 다른 키 없이 이 시간 안에 떼면 변환.
+const SHIFT_TAP: Duration = Duration::from_millis(250);
+const VK_SHIFT_RAW: u16 = 0x10;
+const VK_LSHIFT_RAW: u16 = 0xA0;
+const SCAN_RSHIFT: u32 = 0x36;
+
+/// 왼쪽 Shift인가. 오른쪽 Shift(스캔 코드 0x36)만 아니면 왼쪽으로 본다
+/// (자동화 도구 등이 스캔 코드 없이 보낸 Shift도 받기 위해).
+/// 임시 진단 로그 (%TEMP%\multilang-tip.log). MULTILANG_TIP_DEBUG 파일이 DLL 옆에 있을 때만.
+fn debug_log(what: &str, wparam: WPARAM, lparam: LPARAM) {
+    let dll = String::from_utf16_lossy(&module_path());
+    let Some(dir) = std::path::Path::new(&dll).parent() else { return };
+    if !dir.join("MULTILANG_TIP_DEBUG").exists() {
+        return;
+    }
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("tip-debug.log")) {
+        let _ = writeln!(f, "{what} vk=0x{:02X} lparam=0x{:08X}", wparam.0, lparam.0 as u32);
+    }
+}
+
+fn is_left_shift(wparam: WPARAM, lparam: LPARAM) -> bool {
+    let vk = wparam.0 as u16;
+    (vk == VK_SHIFT_RAW || vk == VK_LSHIFT_RAW) && ((lparam.0 as u32 >> 16) & 0xFF) != SCAN_RSHIFT
+}
+
 // ---------------------------------------------------------------- 텍스트 서비스
 #[derive(Default)]
 struct State {
     thread_mgr: Option<ITfThreadMgr>,
     client_id: u32,
     composition: Option<ITfComposition>,
-    /// 표시 속성 GUID의 TSF 원자값 (일반, 모호). 처음 쓸 때 등록한다.
-    atoms: Option<(u32, u32)>,
+    /// 표시 속성 GUID의 TSF 원자값 (일반, 모호, 후보 선택 중). 처음 쓸 때 등록한다.
+    atoms: Option<(u32, u32, u32)>,
+    /// 조합 영역의 화면 위치 (후보창을 붙일 곳). 편집 세션에서 갱신한다.
+    anchor: Option<RECT>,
+    /// 왼쪽 Shift를 누른 시각 (그 뒤 다른 키가 오면 None).
+    shift_down: Option<Instant>,
 }
 
 #[implement(ITfTextInputProcessorEx, ITfTextInputProcessor, ITfKeyEventSink, ITfCompositionSink, ITfDisplayAttributeProvider)]
@@ -110,12 +146,18 @@ impl TextService_Impl {
         self.backend.try_borrow_mut().ok()?.call(req)
     }
 
-    fn atoms(&self) -> Option<(u32, u32)> {
+    fn atoms(&self) -> Option<(u32, u32, u32)> {
         if let Some(a) = self.state.try_borrow().ok()?.atoms {
             return Some(a);
         }
         let cats: ITfCategoryMgr = unsafe { CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER) }.ok()?;
-        let a = unsafe { (cats.RegisterGUID(&display::ATTR_INPUT).ok()?, cats.RegisterGUID(&display::ATTR_AMBIGUOUS).ok()?) };
+        let a = unsafe {
+            (
+                cats.RegisterGUID(&display::ATTR_INPUT).ok()?,
+                cats.RegisterGUID(&display::ATTR_AMBIGUOUS).ok()?,
+                cats.RegisterGUID(&display::ATTR_FOCUSED).ok()?,
+            )
+        };
         if let Ok(mut s) = self.state.try_borrow_mut() {
             s.atoms = Some(a);
         }
@@ -138,14 +180,34 @@ impl TextService_Impl {
         }
         .into();
         let hr = unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
+        // 후보창: 응답에 후보가 있으면 조합 아래에 띄우고, 없으면 숨긴다
+        match (&resp.candidates, self.state.try_borrow().ok().and_then(|s| s.anchor)) {
+            (Some(list), Some(anchor)) if !resp.preedit.is_empty() => candwin::show(list, anchor),
+            _ => candwin::hide(),
+        }
         hr.ok()
+    }
+
+    fn composing(&self) -> bool {
+        self.state.try_borrow().map(|s| s.composition.is_some()).unwrap_or(false)
     }
 
     fn reset(&self) {
         if let Ok(mut s) = self.state.try_borrow_mut() {
             s.composition = None;
         }
+        candwin::hide();
         let _ = self.call(&Request::Reset);
+    }
+
+    /// 왼쪽 Shift 탭인가 (KeyUp에서 확인). 조합 중일 때만 의미가 있다.
+    fn shift_tap_pending(&self) -> bool {
+        self.state
+            .try_borrow()
+            .ok()
+            .and_then(|s| s.shift_down)
+            .is_some_and(|t| t.elapsed() <= SHIFT_TAP)
+            && self.composing()
     }
 }
 
@@ -163,6 +225,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             Err(_) => return Ok(()),
         };
         let _ = self.call(&Request::Reset);
+        candwin::hide();
         if let Some(tm) = tm {
             if let Ok(km) = tm.cast::<ITfKeystrokeMgr>() {
                 let _ = unsafe { km.UnadviseKeyEventSink(tid) };
@@ -187,27 +250,56 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
 }
 
 impl ITfKeyEventSink_Impl for TextService_Impl {
-    fn OnSetFocus(&self, _fforeground: BOOL) -> Result<()> {
+    fn OnSetFocus(&self, fforeground: BOOL) -> Result<()> {
+        if !fforeground.as_bool() {
+            candwin::hide();
+        }
         Ok(())
     }
 
-    fn OnTestKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+    /// 키를 먹을지 묻기만 한다 (상태를 바꾸지 않음). TSF는 보통 이 단계 없이 OnKeyDown을 바로 부른다.
+    fn OnTestKeyDown(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+        debug_log("TestKeyDown", wparam, lparam);
+        if is_left_shift(wparam, lparam) {
+            return Ok(false.into());
+        }
         let Some(t) = self.call(&Request::Test { key: current_key(wparam) }) else {
             return Ok(false.into());
         };
+        // flush_first면 OnKeyDown에서 확정한 뒤 키를 앱에 넘긴다
+        Ok((t.eaten || t.flush_first).into())
+    }
+
+    /// 실제 키 처리. 메모장 실측에서 TSF가 OnTestKeyDown 없이 이것만 부르는 것을 확인했다.
+    fn OnKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+        debug_log("KeyDown", wparam, lparam);
+        // 왼쪽 Shift: 누른 시각만 기록하고 키는 앱에 넘긴다 (탭 판정은 KeyUp에서)
+        let repeat = (lparam.0 as u32 >> 30) & 1 == 1;
+        if let Ok(mut s) = self.state.try_borrow_mut() {
+            if is_left_shift(wparam, lparam) {
+                if !repeat {
+                    s.shift_down = Some(Instant::now());
+                }
+                return Ok(false.into());
+            }
+            s.shift_down = None; // 다른 키가 끼면 탭이 아니다 (Shift+글자 = 대문자)
+        }
+        let Ok(ctx) = pic.ok() else { return Ok(false.into()) };
+        let key = current_key(wparam);
+        let Some(t) = self.call(&Request::Test { key }) else {
+            return Ok(false.into());
+        };
         if t.flush_first {
-            // 조합 중 다른 키: 먼저 확정하고 키는 앱이 처리하게 둔다
-            if let (Ok(ctx), Some(r)) = (pic.ok(), self.call(&Request::Flush)) {
+            // 조합 중 다른 키(구두점, 화살표 등): 먼저 확정하고 키는 앱이 처리하게 둔다
+            if let Some(r) = self.call(&Request::Flush) {
                 let _ = self.apply(ctx, &r);
             }
             return Ok(false.into());
         }
-        Ok(t.eaten.into())
-    }
-
-    fn OnKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        let Ok(ctx) = pic.ok() else { return Ok(false.into()) };
-        let Some(r) = self.call(&Request::Key { key: current_key(wparam) }) else {
+        if !t.eaten {
+            return Ok(false.into());
+        }
+        let Some(r) = self.call(&Request::Key { key }) else {
             return Ok(false.into());
         };
         if !r.eaten {
@@ -217,12 +309,35 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         Ok(true.into())
     }
 
-    fn OnTestKeyUp(&self, _pic: Ref<ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        Ok(false.into())
+    fn OnTestKeyUp(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+        debug_log("TestKeyUp", wparam, lparam);
+        if !is_left_shift(wparam, lparam) {
+            return Ok(false.into());
+        }
+        let tap = self.shift_tap_pending();
+        if !tap {
+            if let Ok(mut s) = self.state.try_borrow_mut() {
+                s.shift_down = None;
+            }
+        }
+        Ok(tap.into())
     }
 
-    fn OnKeyUp(&self, _pic: Ref<ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        Ok(false.into())
+    fn OnKeyUp(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+        debug_log("KeyUp", wparam, lparam);
+        if !is_left_shift(wparam, lparam) {
+            return Ok(false.into());
+        }
+        let tap = self.shift_tap_pending();
+        if let Ok(mut s) = self.state.try_borrow_mut() {
+            s.shift_down = None;
+        }
+        if !tap {
+            return Ok(false.into());
+        }
+        let (Ok(ctx), Some(r)) = (pic.ok(), self.call(&Request::ShiftTap)) else { return Ok(false.into()) };
+        self.apply(ctx, &r)?;
+        Ok(true.into())
     }
 
     fn OnPreservedKey(&self, _pic: Ref<ITfContext>, _rguid: *const GUID) -> Result<BOOL> {
@@ -260,7 +375,7 @@ struct EditSession {
     commit: Option<String>,
     preedit: String,
     segments: Vec<PreeditSegment>,
-    atoms: Option<(u32, u32)>,
+    atoms: Option<(u32, u32, u32)>,
 }
 
 fn variant_i4(v: i32) -> VARIANT {
@@ -308,9 +423,23 @@ impl EditSession {
         unsafe { comp.EndComposition(ec) }
     }
 
-    /// 조합 범위 안에서 구간마다 밑줄 종류(일반/모호)를 표시한다.
+    /// 조합 영역의 화면 위치를 기록한다 (후보창 위치).
+    fn remember_anchor(&self, ec: u32, range: &ITfRange) {
+        let rect = (|| -> Result<RECT> {
+            let view = unsafe { self.context.GetActiveView()? };
+            let mut rc = RECT::default();
+            let mut clipped = BOOL::default();
+            unsafe { view.GetTextExt(ec, range, &mut rc, &mut clipped)? };
+            Ok(rc)
+        })();
+        if let (Ok(rc), Ok(mut s)) = (rect, self.state.try_borrow_mut()) {
+            s.anchor = Some(rc);
+        }
+    }
+
+    /// 조합 범위 안에서 구간마다 밑줄 종류(일반/모호/후보 선택 중)를 표시한다.
     fn mark_segments(&self, ec: u32, range: &ITfRange) {
-        let Some((input, ambiguous)) = self.atoms else { return };
+        let Some((input, ambiguous, focused)) = self.atoms else { return };
         let Ok(prop) = (unsafe { self.context.GetProperty(&GUID_PROP_ATTRIBUTE) }) else { return };
         let mut start = 0i32;
         for seg in &self.segments {
@@ -322,7 +451,13 @@ impl EditSession {
                 let mut moved = 0i32;
                 unsafe { r.ShiftEnd(ec, end, &mut moved, std::ptr::null())? };
                 unsafe { r.ShiftStart(ec, start, &mut moved, std::ptr::null())? };
-                let atom = if seg.ambiguous { ambiguous } else { input };
+                let atom = if seg.focused {
+                    focused
+                } else if seg.ambiguous {
+                    ambiguous
+                } else {
+                    input
+                };
                 let v = variant_i4(atom as i32);
                 unsafe { prop.SetValue(ec, &r, &v) }
             };
@@ -373,6 +508,7 @@ impl ITfEditSession_Impl for EditSession_Impl {
             unsafe { range.SetText(ec, 0, &utf16(&self.preedit))? };
             self.mark_segments(ec, &range);
             self.caret_to_end(ec, &range)?;
+            self.remember_anchor(ec, &range);
         } else if self.commit.is_none() {
             if let Some(comp) = self.composition() {
                 let range = unsafe { comp.GetRange()? };
