@@ -1,0 +1,47 @@
+# 실사용 문제점과 Meltype 참조 검토 (2026-11-23)
+
+## 1. 실사용에서 확인한 문제 (사용자 보고, 미해결)
+
+| 문제 | 메모 / 추정 원인 |
+| --- | --- |
+| 실제 키보드에서 Shift(좌우 모두)를 누르면 후보창이 안 뜨고 조합 글자가 사라짐 | 자동 시험(computer-use `key`)에서는 동작했다. 실제 키보드는 자동 반복·스캔 코드·좌우 구분(VK_LSHIFT/VK_RSHIFT, 0x2A/0x36)이 다를 수 있다. Shift KeyDown이 먹히지 않고 앱으로 넘어가 앱이 조합을 끝냈거나, KeyUp에서 탭 판정이 빗나가 조합이 리셋됐을 가능성. `MULTILANG_TIP_DEBUG`로 실제 키보드의 KeyDown/KeyUp 순서·lparam을 먼저 기록할 것. 오른쪽 Shift도 반응한 것은 좌우 판정 버그. |
+| IME 적용 직후 동작이 불안정했다가, 조금 쓰고 나서 안정 | 첫 사용 때 백엔드·Mozc 서버 시작(수 초), 모델 로드, 첫 Mozc 연결 실패 후 30초 재시도 대기가 겹친 것으로 추정. 백엔드 로그(`%LOCALAPPDATA%\multilang-ime\backend.log`)의 시각과 대조 필요. 대책 후보: 로그온 시 Mozc까지 미리 띄우기, 준비 전에는 가나로 표시하고 그 사실을 알리기. |
+| 후보를 방향키로도 고르고 싶음 (요청) | 후보창이 열려 있을 때 ↑↓(또는 ←→)로 선택 이동. Shift 탭·숫자와 함께 쓴다. 후보창이 없을 때의 방향키는 지금처럼 먼저 확정하고 앱에 넘긴다. |
+
+## 2. Meltype 참조 검토 (무료 배포, GPL-3.0 전제)
+
+Meltype (https://meltype.moe, https://github.com/yksr-melt/Meltype): 일본어·영어를 단어마다 자동 판정하는 Windows IME. GPL-3.0-or-later.
+
+### 구조 요약 (공개 문서 기준)
+- C# (.NET 10) 본체: `Meltype.Core`(조합, 판정, 학습, 변환 엔진, 사전, 설정), `Meltype.Windows`(키보드 훅, 변환 상자 UI, TSF/IMM32, UI Automation).
+- TSF DLL은 C++ (`native/tip`). 후보는 자체 "변환 상자" UI.
+- Mozc: 링크하지 않고 별도 프로세스 `meltype_mozc_helper`(stdin/stdout, 명령 C=변환, L=학습, R=역변환, S=저장). Mozc를 포크하지 않고 특정 커밋에 도우미 소스와 Bazel 조각만 더해 빌드.
+- Zenzai: llama.cpp `llama-server`를 별도 프로세스로 띄우고 zenz-v3.2-small 모델로 Mozc 결과와 합친다 (`HybridConverter`).
+- 영어/일본어 판정: `Detection/`(로마자, 영어, 사전, 가나, 오타 판정, 학습) + 영어 단어 목록. 알고리즘 문서는 없음.
+- 설치: Inno Setup, 포터블 zip. CI에서 Defender 검사 후 배포.
+
+### 라이선스 호환 (우리 프로젝트를 GPL-3.0으로 할 때)
+| 구성 | 라이선스 | GPL-3.0과 |
+| --- | --- | --- |
+| Meltype 코드 | GPL-3.0-or-later | 그대로 가져다 쓸 수 있다 (출처·저작권 표기 유지, 우리도 GPL-3.0 이상) |
+| Mozc (우리도 사용) | BSD-3-Clause, 사전은 IPAdic 등 | 호환 |
+| llama.cpp | MIT | 호환 |
+| zenz-v3.2-small | Apache-2.0 | GPL-3.0과 호환 (GPL-2.0과는 아님) |
+| wordfreq 데이터 (우리 판정 모델) | CC BY-SA 4.0 | CC BY-SA 4.0 → GPL-3.0 단방향 호환 (Creative Commons 공식) |
+| JMdict 파생 (Meltype) | CC BY-SA 4.0 | 같음 |
+| SKK 파생 (Meltype) | GPL-2.0-or-later | GPL-3.0으로 사용 가능 |
+| Rust 크레이트 (windows, prost, serde 등) | MIT / Apache-2.0 | 호환 |
+
+결론: 우리 프로젝트를 **GPL-3.0-or-later**로 하면 Meltype 코드·데이터를 참조뿐 아니라 일부 가져다 쓰는 것도 가능하다. 가져올 때는 파일별 저작권 표기와 THIRD-PARTY-NOTICES를 유지한다. 배포물에는 소스 공개(저장소 링크)와 라이선스 전문을 넣는다.
+
+### 참조할 만한 것 (우선순위)
+1. **영어 판정 자원**: 영어 단어 목록, 학습된 영어/일본어 판정 방식. 우리 약점(일본어 안의 영어, 짧은 문절)과 직접 겹친다. 우리 판정기(키 4-gram + 사전)와 비교 실험 후 사전만 가져오는 방식이 무난.
+2. **Mozc 도우미 방식**: mozc_server IPC 대신 자체 빌드 도우미(stdin/stdout). 공식 MSI의 mozc_server를 풀어 쓰는 현재 방식(가장 토큰 실행, 패키지 앱 문맥 문제)을 대체할 수 있다. 우리 브랜드로 빌드·서명하는 배포 문제도 같이 풀린다. 단 Bazel 빌드 30~40분.
+3. **변환 품질**: Zenzai(zenz + llama.cpp)는 문맥 변환을 보완한다. 우리 실험에서 공개 Mozc는 앞 문맥을 써도 機能/古そう 같은 오변환이 남았다. 다만 부하가 늘어나므로 선택 기능(기본 끔)으로 두고, 품질 차이를 측정한 뒤 결정 (사용자 의견: 큰 진전이 없으면 부하만 늘어남).
+4. **설치·배포**: Inno Setup 스크립트, 포터블 판, 자동 꺼짐 규칙(비밀번호 칸, 관리자 앱), 코드 편집기 모드.
+5. **키 조작 비교**: Meltype은 Space=다음 후보, Tab=예측. 우리는 Space=확정, Shift 탭=변환으로 다르다. 그대로 따르지 않고, 방향키 선택 등 겹치는 부분만 참고.
+
+### 주의
+- Meltype은 한국어를 지원하지 않으므로 핵심 차별점(한·영·일 자동 전환)은 그대로 유지된다.
+- GPL-3.0으로 정하면 이후 상용·독점 판으로 바꾸기 어렵다 (외부 기여 코드 포함 시). 무료 공개가 목표라면 문제 없음.
+- 라이선스 결정 전에 기획서의 "라이선스 미정" 항목을 GPL-3.0-or-later로 갱신할지 사용자 확인 필요.
