@@ -6,3 +6,4 @@ data/public/
 third_party/
 poc/mozc/gen/
 target/
+deploy/

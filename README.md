@@ -114,7 +114,8 @@ python eval/evaluate.py data/private/tweets_koen.jsonl data/private/tweets_ja.js
 `cargo build --release` (64비트), `--target i686-pc-windows-msvc` (32비트).
 알파벳 키를 그대로 조합에 넣고 Backspace/Space/Enter/Esc 처리. 언어 판정은 M2에서 연결.
 `python tip/tests/com_smoke.py`: 등록 없이 DLL을 불러 클래스 팩토리·인터페이스 확인.
-등록: 관리자 명령 프롬프트에서 `regsvr32 targetelease\multilang_tip.dll` (해제는 `/u`).
+등록: 관리자 명령 프롬프트에서 `regsvr32 target
+elease\multilang_tip.dll` (해제는 `/u`).
 
 ## Mozc 연동 개념 검증 (2026-11-23)
 
