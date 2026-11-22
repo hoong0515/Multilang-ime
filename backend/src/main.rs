@@ -80,13 +80,19 @@ fn data_dir() -> PathBuf {
     std::env::var("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("multilang-ime")
 }
 
+fn mozc_server_path() -> Option<PathBuf> {
+    let p = std::env::current_exe().ok()?.parent()?.join("mozc").join("mozc_server.exe");
+    p.exists().then_some(p)
+}
+
 fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory) {
     let h = HANDLE(h.0 as *mut c_void);
-    let mozc_server = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("mozc").join("mozc_server.exe")));
-    let mozc_server = mozc_server.filter(|p| p.exists());
-    let mut session = Session::new(models, history, Some(data_dir().join("history.json")), mozc_server);
+    let mut session = Session::new(models, history, Some(data_dir().join("history.json")), mozc_server_path());
     while let Some(msg) = read_message(h) {
-        let resp = match serde_json::from_slice::<Request>(&msg) {
+        let t = std::time::Instant::now();
+        let req = serde_json::from_slice::<Request>(&msg);
+        let op = req.as_ref().map(|r| format!("{r:?}")).unwrap_or_default();
+        let resp = match req {
             Ok(Request::Test { key }) => session.test(&key),
             Ok(Request::Key { key }) => session.key(&key),
             Ok(Request::Flush) => session.flush(),
@@ -97,6 +103,10 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory)
                 Response::default()
             }
         };
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        if ms > 50.0 {
+            log(&format!("slow request {ms:.0} ms: {op}"));
+        }
         let body = serde_json::to_vec(&resp).unwrap_or_default();
         let mut written = 0u32;
         if unsafe { WriteFile(h, Some(&body), Some(&mut written), None) }.is_err() {
@@ -130,6 +140,10 @@ fn main() {
     let history: SharedHistory = Arc::new(Mutex::new(History::load(&data_dir().join("history.json"))));
     if let Ok(h) = history.lock() {
         log(&format!("history entries: {}", h.len()));
+    }
+    // Mozc 서버는 시작할 때 미리 띄운다 (첫 일본어 키에서 띄우면 TIP가 시간 초과로 키를 놓친다)
+    if let Some(server) = mozc_server_path() {
+        session::start_mozc(&server);
     }
     let user = std::env::var("USERNAME").unwrap_or_default();
     let name = wide(&ipc::pipe_name(&user));

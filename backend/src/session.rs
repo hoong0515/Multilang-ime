@@ -42,6 +42,69 @@ const VK_OEM_MINUS: u16 = 0xBD;
 
 // ---------------------------------------------------------------- Mozc 연결
 
+/// Mozc 서버 상태 (백엔드 전체에서 하나). 서버 실행은 별도 스레드에서만 한다.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum MozcState {
+    Idle,
+    Launching,
+    Ready,
+    Failed(Instant),
+}
+
+static MOZC: std::sync::Mutex<MozcState> = std::sync::Mutex::new(MozcState::Idle);
+
+/// 서버를 백그라운드에서 띄운다 (이미 띄우는 중이거나 준비됐으면 아무것도 안 한다).
+pub fn start_mozc(server: &std::path::Path) {
+    let Ok(mut st) = MOZC.lock() else { return };
+    if matches!(*st, MozcState::Launching | MozcState::Ready) {
+        return;
+    }
+    *st = MozcState::Launching;
+    drop(st);
+    let server = server.to_path_buf();
+    std::thread::spawn(move || {
+        let t = Instant::now();
+        let r = mozc::Client::connect_or_launch(&server).and_then(mozc::Session::new);
+        let next = match r {
+            Ok(_) => {
+                crate::log(&format!("mozc: ready in {} ms", t.elapsed().as_millis()));
+                MozcState::Ready
+            }
+            Err(e) => {
+                crate::log(&format!("mozc: launch failed: {e:?}"));
+                MozcState::Failed(Instant::now())
+            }
+        };
+        if let Ok(mut st) = MOZC.lock() {
+            *st = next;
+        }
+    });
+}
+
+/// 준비됐는가. 아직이면 (필요하면 다시) 백그라운드 실행을 건다.
+fn mozc_ready(server: &std::path::Path) -> bool {
+    let st = MOZC.lock().map(|s| *s).unwrap_or(MozcState::Idle);
+    match st {
+        MozcState::Ready => true,
+        MozcState::Launching => false,
+        MozcState::Failed(t) if t.elapsed() < MOZC_RETRY => false,
+        _ => {
+            start_mozc(server);
+            false
+        }
+    }
+}
+
+/// 연결이 끊겼다 (서버가 죽었을 수 있다): 다시 띄우게 한다.
+fn mozc_lost(server: &std::path::Path) {
+    if let Ok(mut st) = MOZC.lock() {
+        if *st == MozcState::Ready {
+            *st = MozcState::Idle;
+        }
+    }
+    start_mozc(server);
+}
+
 /// Mozc 서버와의 연결 (없거나 실패하면 가나로 대신 보인다).
 ///
 /// 지연: 가나를 통째로 넣는 UPDATE_COMPOSITION은 약 14 ms라, Mozc 조합을 우리 로마자 키와 맞춰 두고
@@ -72,38 +135,42 @@ impl MozcBridge {
     }
 
     fn ensure(&mut self) -> bool {
-        if self.session.is_none() {
-            let Some(server) = self.server.clone() else {
-                if self.failed_at.is_none() {
-                    crate::log("mozc: no server bundled (kana only)");
-                    self.failed_at = Some(Instant::now());
-                }
-                return false;
-            };
-            if self.failed_at.is_some_and(|t| t.elapsed() < MOZC_RETRY) {
-                return false;
+        if self.session.is_some() {
+            return true;
+        }
+        let Some(server) = self.server.clone() else {
+            if self.failed_at.is_none() {
+                crate::log("mozc: no server bundled (kana only)");
+                self.failed_at = Some(Instant::now());
             }
-            match mozc::Client::connect_or_launch(&server).and_then(mozc::Session::new) {
-                Ok(s) => {
-                    crate::log("mozc: connected");
-                    self.session = Some(s);
-                    self.typed = None;
-                }
-                Err(e) => {
-                    crate::log(&format!("mozc: connect failed: {e:?}"));
-                    self.failed_at = Some(Instant::now());
-                    return false;
-                }
+            return false;
+        };
+        // 키 처리 중에는 서버를 띄우지 않는다 (TIP는 200 ms만 기다린다). 준비될 때까지 가나로 보인다.
+        if !mozc_ready(&server) {
+            return false;
+        }
+        match mozc::Client::connect().and_then(mozc::Session::new) {
+            Ok(s) => {
+                crate::log("mozc: connected");
+                self.session = Some(s);
+                self.typed = None;
+                true
+            }
+            Err(e) => {
+                crate::log(&format!("mozc: connect failed: {e:?}"));
+                mozc_lost(&server);
+                false
             }
         }
-        true
     }
 
     fn drop_session(&mut self, why: &str, e: mozc::Error) {
         crate::log(&format!("mozc: {why} failed: {e:?}"));
         self.session = None;
         self.typed = None;
-        self.failed_at = Some(Instant::now());
+        if let Some(server) = &self.server {
+            mozc_lost(server);
+        }
     }
 
     /// Mozc 조합을 keys(가나 kana)로 맞춘다.
