@@ -1,4 +1,5 @@
 //! TIP (TSF 텍스트 서비스). M2: 키를 백엔드에 보내고, 돌아온 조합·확정을 문서에 쓴다.
+//! 조합은 구간마다 밑줄 종류(일반 실선 / 모호 점선)를 달리 표시한다 (display.rs).
 //!
 //! - OnTestKeyDown: 백엔드에 "이 키를 먹을지"만 묻는다 (상태 변화 없음).
 //!   조합 중에 다른 키(구두점 등)가 오면 백엔드가 flush_first를 돌려주고, 여기서 먼저 확정한 뒤 키는 앱에 넘긴다.
@@ -11,6 +12,7 @@
 #![allow(non_snake_case)]
 
 mod client;
+mod display;
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -19,7 +21,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use client::Client;
-use ipc::{Key, Request, Response};
+use ipc::{Key, PreeditSegment, Request, Response};
 use windows::core::{implement, w, IUnknownImpl, Interface, Ref, BOOL, GUID, HRESULT, IUnknown, PCWSTR, Result};
 use windows::Win32::Foundation::{
     CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, E_POINTER, HMODULE, LPARAM, S_FALSE, S_OK, WPARAM,
@@ -34,6 +36,7 @@ use windows::Win32::System::Registry::{
     REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
+use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, HKL, VK_CAPITAL, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
@@ -86,9 +89,11 @@ struct State {
     thread_mgr: Option<ITfThreadMgr>,
     client_id: u32,
     composition: Option<ITfComposition>,
+    /// 표시 속성 GUID의 TSF 원자값 (일반, 모호). 처음 쓸 때 등록한다.
+    atoms: Option<(u32, u32)>,
 }
 
-#[implement(ITfTextInputProcessorEx, ITfTextInputProcessor, ITfKeyEventSink, ITfCompositionSink)]
+#[implement(ITfTextInputProcessorEx, ITfTextInputProcessor, ITfKeyEventSink, ITfCompositionSink, ITfDisplayAttributeProvider)]
 struct TextService {
     state: Rc<RefCell<State>>,
     backend: RefCell<Client>,
@@ -105,8 +110,21 @@ impl TextService_Impl {
         self.backend.try_borrow_mut().ok()?.call(req)
     }
 
+    fn atoms(&self) -> Option<(u32, u32)> {
+        if let Some(a) = self.state.try_borrow().ok()?.atoms {
+            return Some(a);
+        }
+        let cats: ITfCategoryMgr = unsafe { CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER) }.ok()?;
+        let a = unsafe { (cats.RegisterGUID(&display::ATTR_INPUT).ok()?, cats.RegisterGUID(&display::ATTR_AMBIGUOUS).ok()?) };
+        if let Ok(mut s) = self.state.try_borrow_mut() {
+            s.atoms = Some(a);
+        }
+        Some(a)
+    }
+
     /// 동기 편집 세션으로 응답(확정·조합)을 문서에 반영한다 (키 이벤트 콜백 안에서만 호출).
     fn apply(&self, context: &ITfContext, resp: &Response) -> Result<()> {
+        let atoms = self.atoms();
         let client_id = self.state.try_borrow().map(|s| s.client_id).map_err(|_| E_FAIL)?;
         let sink: ITfCompositionSink = self.to_interface();
         let session: ITfEditSession = EditSession {
@@ -115,6 +133,8 @@ impl TextService_Impl {
             sink,
             commit: resp.commit.clone(),
             preedit: resp.preedit_text(),
+            segments: resp.preedit.clone(),
+            atoms,
         }
         .into();
         let hr = unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
@@ -210,6 +230,19 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     }
 }
 
+impl ITfDisplayAttributeProvider_Impl for TextService_Impl {
+    fn EnumDisplayAttributeInfo(&self) -> Result<IEnumTfDisplayAttributeInfo> {
+        Ok(display::EnumAttributes::new(0))
+    }
+
+    fn GetDisplayAttributeInfo(&self, guid: *const GUID) -> Result<ITfDisplayAttributeInfo> {
+        if guid.is_null() {
+            return Err(E_POINTER.into());
+        }
+        display::AttributeInfo::get(unsafe { &*guid })
+    }
+}
+
 impl ITfCompositionSink_Impl for TextService_Impl {
     /// 앱이 조합을 강제로 끝냈을 때 (클릭으로 커서 이동 등): 표시된 대로 확정된 것으로 보고 백엔드 상태를 비운다.
     fn OnCompositionTerminated(&self, _ecwrite: u32, _pcomposition: Ref<ITfComposition>) -> Result<()> {
@@ -226,6 +259,22 @@ struct EditSession {
     sink: ITfCompositionSink,
     commit: Option<String>,
     preedit: String,
+    segments: Vec<PreeditSegment>,
+    atoms: Option<(u32, u32)>,
+}
+
+fn variant_i4(v: i32) -> VARIANT {
+    VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: ManuallyDrop::new(VARIANT_0_0 {
+                vt: VT_I4,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: VARIANT_0_0_0 { lVal: v },
+            }),
+        },
+    }
 }
 
 fn utf16(s: &str) -> Vec<u16> {
@@ -250,7 +299,36 @@ impl EditSession {
         if let Ok(mut s) = self.state.try_borrow_mut() {
             s.composition = None;
         }
+        // 확정된 글에 밑줄이 남지 않게 표시 속성을 지운다
+        if let (Ok(prop), Ok(range)) =
+            (unsafe { self.context.GetProperty(&GUID_PROP_ATTRIBUTE) }, unsafe { comp.GetRange() })
+        {
+            let _ = unsafe { prop.Clear(ec, &range) };
+        }
         unsafe { comp.EndComposition(ec) }
+    }
+
+    /// 조합 범위 안에서 구간마다 밑줄 종류(일반/모호)를 표시한다.
+    fn mark_segments(&self, ec: u32, range: &ITfRange) {
+        let Some((input, ambiguous)) = self.atoms else { return };
+        let Ok(prop) = (unsafe { self.context.GetProperty(&GUID_PROP_ATTRIBUTE) }) else { return };
+        let mut start = 0i32;
+        for seg in &self.segments {
+            let len = seg.text.encode_utf16().count() as i32;
+            let end = start + len;
+            let mark = || -> Result<()> {
+                let r = unsafe { range.Clone()? };
+                unsafe { r.Collapse(ec, TF_ANCHOR_START)? };
+                let mut moved = 0i32;
+                unsafe { r.ShiftEnd(ec, end, &mut moved, std::ptr::null())? };
+                unsafe { r.ShiftStart(ec, start, &mut moved, std::ptr::null())? };
+                let atom = if seg.ambiguous { ambiguous } else { input };
+                let v = variant_i4(atom as i32);
+                unsafe { prop.SetValue(ec, &r, &v) }
+            };
+            let _ = mark();
+            start = end;
+        }
     }
 
     fn caret_to_end(&self, ec: u32, range: &ITfRange) -> Result<()> {
@@ -293,6 +371,7 @@ impl ITfEditSession_Impl for EditSession_Impl {
             };
             let range = unsafe { comp.GetRange()? };
             unsafe { range.SetText(ec, 0, &utf16(&self.preedit))? };
+            self.mark_segments(ec, &range);
             self.caret_to_end(ec, &range)?;
         } else if self.commit.is_none() {
             if let Some(comp) = self.composition() {
@@ -383,8 +462,12 @@ fn unregister_com_class() {
     }
 }
 
-const CATEGORIES: [GUID; 3] =
-    [GUID_TFCAT_TIP_KEYBOARD, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT];
+const CATEGORIES: [GUID; 4] = [
+    GUID_TFCAT_TIP_KEYBOARD,
+    GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
+    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+    GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+];
 
 fn register_tsf() -> Result<()> {
     let profiles: ITfInputProcessorProfileMgr =

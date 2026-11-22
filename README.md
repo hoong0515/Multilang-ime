@@ -134,8 +134,10 @@ cargo build --release                     # target/release: multilang_tip.dll, b
 - 배포: `deployd`에 `multilang_tip.dll`, `backend.exe`, `engine_model.json`. 이미 DLL을 불러온 프로세스는 이전 버전을 계속 쓰므로, 시험하는 앱은 다시 시작해야 한다.
 - 메모장 실측: 전환 키 없이 `dkssudgktpdy hello APIfmf.` → `안녕하세요 hello API를.`, `gksrmf test` → `한글 test`.
   백엔드를 끈 상태에서도 TIP가 자동으로 띄움.
-- 알려진 문제: 패키지 앱(메모장 등)이 띄운 백엔드는 그 앱의 패키지 문맥을 물려받는다 (로그가 가상 폴더로 감, 앱 종료 시 함께 끝날 수 있음).
-  M3 전에 로그온 시 시작으로 바꾼다. 구간별 밑줄(표시 속성)과 모호 표시는 아직 없음.
+- 백엔드 시작: `powershell -ExecutionPolicy Bypass -File toolsackend-task.ps1 install` (사용자 로그온 작업, 관리자 권한 불필요, 해제는 `uninstall`).
+  패키지 앱(메모장 등)이 띄운 백엔드는 그 앱의 패키지 문맥을 물려받기 때문에(가상 폴더, 앱과 수명 공유) 작업 스케줄러로 띄운다. TIP의 직접 실행은 비상용.
+- 구간별 밑줄: 표시 속성 제공자(일반 실선 / 모호 점선 / 후보 선택 중 굵은 실선). 메모장에서 조합 중 실선 표시와 확정 뒤 밑줄 제거를 확인.
+  모호 구간 점선은 백엔드가 모호 표시(`go`, `so`, `ah` 등)를 보내는 것까지 확인했고, 화면 해상도 문제로 점선 모양 자체는 눈으로 확인하지 못했다.
 
 ## Mozc 연동 개념 검증 (2026-11-23)
 

@@ -19,6 +19,7 @@ IIDS = {
     "ITfTextInputProcessorEx": "{6E4E2102-F9CD-433D-B496-303CE03A6507}",
     "ITfKeyEventSink": "{AA80E7F5-2021-11D2-93E0-0060B067B86E}",
     "ITfCompositionSink": "{A781718C-579A-4B15-A280-32B8577ACC5E}",
+    "ITfDisplayAttributeProvider": "{FEE47777-163C-4769-996A-6E9C50AD8F54}",
     "ITfEditSession(없어야 함)": "{AA80E803-2021-11D2-93E0-0060B067B86E}",
 }
 
