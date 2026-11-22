@@ -20,6 +20,41 @@ pub struct Key {
     pub alt: bool,
 }
 
+/// 미국 배열 기준 숫자·기호 키 → 글자 (글자 키 제외).
+pub fn symbol_char(k: &Key) -> Option<char> {
+    if k.ctrl || k.alt {
+        return None;
+    }
+    let (lo, hi) = match k.vk {
+        0x30..=0x39 => {
+            let d = (k.vk - 0x30) as usize;
+            ((b'0' + d as u8) as char, b")!@#$%^&*("[d] as char)
+        }
+        0xBA => (';', ':'),
+        0xBB => ('=', '+'),
+        0xBC => (',', '<'),
+        0xBD => ('-', '_'),
+        0xBE => ('.', '>'),
+        0xBF => ('/', '?'),
+        0xC0 => ('`', '~'),
+        0xDB => ('[', '{'),
+        0xDC => ('\\', '|'),
+        0xDD => (']', '}'),
+        0xDE => ('\'', '"'),
+        _ => return None,
+    };
+    Some(if k.shift { hi } else { lo })
+}
+
+/// 글자 키(Shift·CapsLock 반영) 또는 숫자·기호 키 → 글자.
+pub fn key_char(k: &Key) -> Option<char> {
+    if (0x41..=0x5A).contains(&k.vk) && !k.ctrl && !k.alt {
+        let c = k.vk as u8 as char;
+        return Some(if k.shift ^ k.caps { c } else { c.to_ascii_lowercase() });
+    }
+    symbol_char(k)
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {

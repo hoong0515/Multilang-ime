@@ -81,6 +81,12 @@ fn data_dir() -> PathBuf {
     std::env::var("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("multilang-ime")
 }
 
+fn debug_delay() -> Option<std::time::Duration> {
+    let p = std::env::current_exe().ok()?.parent()?.join("BACKEND_DELAY_MS");
+    let ms: u64 = std::fs::read_to_string(p).ok()?.trim().parse().ok()?;
+    Some(std::time::Duration::from_millis(ms))
+}
+
 fn mozc_server_path() -> Option<PathBuf> {
     let p = std::env::current_exe().ok()?.parent()?.join("mozc").join("mozc_server.exe");
     p.exists().then_some(p)
@@ -104,6 +110,12 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory)
                 Response::default()
             }
         };
+        // 시험용: exe 옆에 BACKEND_DELAY_MS 파일(숫자)이 있으면 글자 키 응답을 그만큼 늦춘다
+        if op.starts_with("Key") {
+            if let Some(d) = debug_delay() {
+                std::thread::sleep(d);
+            }
+        }
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         if ms > 50.0 {
             log(&format!("slow request {ms:.0} ms: {op}"));

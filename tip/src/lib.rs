@@ -15,7 +15,7 @@ mod candwin;
 mod client;
 mod display;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
@@ -91,6 +91,8 @@ fn current_key(wparam: WPARAM) -> Key {
 
 /// 왼쪽 Shift 탭: 눌렀다가 다른 키 없이 이 시간 안에 떼면 변환.
 const SHIFT_TAP: Duration = Duration::from_millis(250);
+/// 백엔드 실패 뒤 다시 부르기까지 쉬는 시간.
+const OFFLINE_BACKOFF: Duration = Duration::from_millis(500);
 const VK_SHIFT_RAW: u16 = 0x10;
 const VK_LSHIFT_RAW: u16 = 0xA0;
 const SCAN_RSHIFT: u32 = 0x36;
@@ -108,6 +110,15 @@ fn debug_log(what: &str, wparam: WPARAM, lparam: LPARAM) {
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("tip-debug.log")) {
         let _ = writeln!(f, "{what} vk=0x{:02X} lparam=0x{:08X}", wparam.0, lparam.0 as u32);
     }
+}
+
+/// 진단 로그 한 줄 (MULTILANG_TIP_DEBUG 파일이 있을 때만).
+fn debug_note(what: &str) {
+    debug_log(what, WPARAM(0), LPARAM(0));
+}
+
+fn is_modifier_vk(vk: u16) -> bool {
+    matches!(vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0xA0..=0xA5)
 }
 
 fn is_left_shift(wparam: WPARAM, lparam: LPARAM) -> bool {
@@ -133,17 +144,142 @@ struct State {
 struct TextService {
     state: Rc<RefCell<State>>,
     backend: RefCell<Client>,
+    /// 지금 조합을 만든 키들. 백엔드와 새로 연결되면(재시작·시간 초과 뒤) 다시 보내 조합을 되살린다.
+    journal: RefCell<Vec<Key>>,
+    /// 백엔드 상태가 journal과 맞춰진 연결 세대
+    synced_gen: Cell<u64>,
+    /// 지금 화면에 보이는 조합 문자열과 후보창 여부 (백엔드 응답이 없을 때 이어 붙이기용)
+    shown: RefCell<String>,
+    window_open: Cell<bool>,
+    /// 백엔드가 실패한 직후에는 이 시각까지 부르지 않는다 (키마다 시간 초과를 기다려 앱이 버벅이지 않게)
+    offline_until: Cell<Option<Instant>>,
 }
 
 impl TextService {
     fn new() -> Self {
-        Self { state: Rc::new(RefCell::new(State::default())), backend: RefCell::new(Client::new()) }
+        Self {
+            state: Rc::new(RefCell::new(State::default())),
+            backend: RefCell::new(Client::new()),
+            journal: RefCell::new(Vec::new()),
+            synced_gen: Cell::new(0),
+            shown: RefCell::new(String::new()),
+            window_open: Cell::new(false),
+            offline_until: Cell::new(None),
+        }
     }
 }
 
 impl TextService_Impl {
+    /// 백엔드에 요청한다. 새 연결이면 먼저 지금 조합의 키를 다시 보내 상태를 되살린다.
+    /// 연결이 끊겨 있었으면(백엔드 재시작 등) 한 번 다시 연결해 재시도한다. 실패하면 None.
     fn call(&self, req: &Request) -> Option<Response> {
-        self.backend.try_borrow_mut().ok()?.call(req)
+        // 확정에 관계된 키(Space, Enter, Esc, Backspace)와 그 밖의 요청은 쉬는 중에도 시도한다
+        let urgent = match req {
+            Request::Test { key } | Request::Key { key } => matches!(key.vk, 0x08 | 0x0D | 0x1B | 0x20),
+            _ => true,
+        };
+        if !urgent && self.offline_until.get().is_some_and(|t| Instant::now() < t) {
+            return None;
+        }
+        let r = self.call_inner(req);
+        self.offline_until.set(if r.is_none() { Some(Instant::now() + OFFLINE_BACKOFF) } else { None });
+        r
+    }
+
+    fn call_inner(&self, req: &Request) -> Option<Response> {
+        let mut c = self.backend.try_borrow_mut().ok()?;
+        for attempt in 0..2 {
+            if !c.connect() {
+                return None;
+            }
+            if c.generation != self.synced_gen.get() {
+                let keys = self.journal.borrow().clone();
+                let replay = (|| -> std::result::Result<(), client::Fail> {
+                    c.transact(&Request::Reset)?;
+                    for key in keys {
+                        c.transact(&Request::Key { key })?;
+                    }
+                    Ok(())
+                })();
+                match replay {
+                    Ok(()) => self.synced_gen.set(c.generation),
+                    Err(f) => {
+                        debug_note(&format!("replay failed: {f:?}"));
+                        if f == client::Fail::Broken && attempt == 0 {
+                            continue;
+                        }
+                        return None;
+                    }
+                }
+            }
+            match c.transact(req) {
+                Ok(r) => return Some(r),
+                Err(f) => {
+                    debug_note(&format!("call failed: {f:?} {req:?}"));
+                    if f == client::Fail::Broken && attempt == 0 {
+                        continue; // 끊긴 연결: 새로 연결(+되살리기)해서 한 번 더
+                    }
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    /// 글자 키 응답으로 journal을 갱신한다.
+    fn track(&self, key: Key, r: &Response, window_was_open: bool) {
+        let mut j = self.journal.borrow_mut();
+        if r.commit.is_some() {
+            // 확정됐으면 새 조합은 (있다면) 이 키로 시작한 것
+            j.clear();
+            if !r.preedit.is_empty() {
+                j.push(key);
+            }
+        } else if r.preedit.is_empty() {
+            j.clear();
+        } else if !window_was_open {
+            // 후보창 안의 이동·선택은 되살리지 않는다 (되살릴 때는 자동 판정 결과로)
+            j.push(key);
+        }
+    }
+
+    /// 백엔드가 응답하지 않을 때: 글자는 친 그대로 조합에 이어 붙이고(나중에 되살림), 확정 키는 보이는 그대로 확정.
+    /// 키를 먹었으면 true.
+    fn offline_key(&self, ctx: &ITfContext, key: Key) -> bool {
+        let composing = self.composing();
+        let mut r = Response { eaten: true, ..Default::default() };
+        if let Some(ch) = ipc::key_char(&key) {
+            self.journal.borrow_mut().push(key);
+            let text = format!("{}{ch}", self.shown.borrow());
+            r.preedit = vec![ipc::PreeditSegment { text, lang: "raw".into(), ambiguous: false, focused: false }];
+        } else if !composing {
+            return false;
+        } else {
+            let shown = self.shown.borrow().clone();
+            match key.vk {
+                0x08 => {
+                    self.journal.borrow_mut().pop();
+                    let mut t = shown;
+                    t.pop();
+                    if !t.is_empty() {
+                        r.preedit = vec![ipc::PreeditSegment { text: t, lang: "raw".into(), ambiguous: false, focused: false }];
+                    }
+                }
+                0x1B => {}
+                0x20 => r.commit = Some(format!("{shown} ")),
+                _ => {
+                    // 그 밖의 키: 보이는 그대로 확정하고 키는 앱에 넘긴다
+                    r.commit = Some(shown);
+                    r.eaten = false;
+                }
+            }
+            if r.preedit.is_empty() {
+                self.journal.borrow_mut().clear();
+            }
+        }
+        let eaten = r.eaten;
+        let _ = self.apply(ctx, &r);
+        eaten
     }
 
     fn atoms(&self) -> Option<(u32, u32, u32)> {
@@ -181,6 +317,8 @@ impl TextService_Impl {
         }
         .into();
         let hr = unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
+        *self.shown.borrow_mut() = resp.preedit_text();
+        self.window_open.set(resp.candidates.is_some() && !resp.preedit.is_empty());
         // 후보창: 응답에 후보가 있으면 조합 아래에 띄우고, 없으면 숨긴다
         match (&resp.candidates, self.state.try_borrow().ok().and_then(|s| s.anchor)) {
             (Some(list), Some(anchor)) if !resp.preedit.is_empty() => candwin::show(list, anchor),
@@ -197,6 +335,9 @@ impl TextService_Impl {
         if let Ok(mut s) = self.state.try_borrow_mut() {
             s.composition = None;
         }
+        self.journal.borrow_mut().clear();
+        self.shown.borrow_mut().clear();
+        self.window_open.set(false);
         candwin::hide();
         let _ = self.call(&Request::Reset);
     }
@@ -225,6 +366,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             }
             Err(_) => return Ok(()),
         };
+        self.journal.borrow_mut().clear();
+        self.shown.borrow_mut().clear();
         let _ = self.call(&Request::Reset);
         candwin::hide();
         if let Some(tm) = tm {
@@ -287,25 +430,34 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         }
         let Ok(ctx) = pic.ok() else { return Ok(false.into()) };
         let key = current_key(wparam);
-        let Some(t) = self.call(&Request::Test { key }) else {
+        if is_modifier_vk(key.vk) {
             return Ok(false.into());
+        }
+        let Some(t) = self.call(&Request::Test { key }) else {
+            return Ok(self.offline_key(ctx, key).into());
         };
         if t.flush_first {
-            // 조합 중 다른 키(구두점, 화살표 등): 먼저 확정하고 키는 앱이 처리하게 둔다
-            if let Some(r) = self.call(&Request::Flush) {
-                let _ = self.apply(ctx, &r);
+            // 조합 중 다른 키(화살표 등): 먼저 확정하고 키는 앱이 처리하게 둔다
+            match self.call(&Request::Flush) {
+                Some(r) => {
+                    self.journal.borrow_mut().clear();
+                    let _ = self.apply(ctx, &r);
+                }
+                None => return Ok(self.offline_key(ctx, key).into()),
             }
             return Ok(false.into());
         }
         if !t.eaten {
             return Ok(false.into());
         }
+        let window_was_open = self.window_open.get();
         let Some(r) = self.call(&Request::Key { key }) else {
-            return Ok(false.into());
+            return Ok(self.offline_key(ctx, key).into());
         };
         if !r.eaten {
             return Ok(false.into());
         }
+        self.track(key, &r, window_was_open);
         self.apply(ctx, &r)?;
         Ok(true.into())
     }

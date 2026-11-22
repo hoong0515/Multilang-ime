@@ -399,31 +399,7 @@ fn is_dash(k: &Key) -> bool {
     k.vk == VK_OEM_MINUS && !k.shift && !k.ctrl && !k.alt
 }
 
-/// 미국 배열 기준 숫자·기호 키 → 글자 (글자 키 제외).
-fn symbol_char(k: &Key) -> Option<char> {
-    if k.ctrl || k.alt {
-        return None;
-    }
-    let (lo, hi) = match k.vk {
-        0x30..=0x39 => {
-            let d = (k.vk - 0x30) as usize;
-            ((b'0' + d as u8) as char, b")!@#$%^&*("[d] as char)
-        }
-        0xBA => (';', ':'),
-        0xBB => ('=', '+'),
-        0xBC => (',', '<'),
-        0xBD => ('-', '_'),
-        0xBE => ('.', '>'),
-        0xBF => ('/', '?'),
-        0xC0 => ('`', '~'),
-        0xDB => ('[', '{'),
-        0xDC => ('\\', '|'),
-        0xDD => (']', '}'),
-        0xDE => ('\'', '"'),
-        _ => return None,
-    };
-    Some(if k.shift { hi } else { lo })
-}
+use ipc::symbol_char;
 
 /// 기호 조합의 후보: (텍스트, 라벨). 첫 번째가 기본 표시.
 fn symbol_variants(sym: &str, ja: bool) -> Vec<(String, String)> {
