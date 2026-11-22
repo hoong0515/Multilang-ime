@@ -1,0 +1,7 @@
+[workspace]
+members = ["tip", "engine", "backend", "ipc"]
+resolver = "3"
+
+[profile.release]
+panic = "abort"
+lto = true

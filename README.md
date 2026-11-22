@@ -117,6 +117,26 @@ python eval/evaluate.py data/private/tweets_koen.jsonl data/private/tweets_ja.js
 등록: 관리자 명령 프롬프트에서 `regsvr32 target
 elease\multilang_tip.dll` (해제는 `/u`).
 
+## M2 백엔드 + 한·영 판정 연결 (2026-11-23)
+
+Rust 워크스페이스: `engine/`(판정 엔진), `backend/`(파이프 서버), `ipc/`(메시지), `tip/`(TSF 텍스트 서비스).
+
+```powershell
+python -m ime_v0.export_model            # data/engine_model.json (Rust 엔진용 모델·파라미터)
+cargo test -p engine -p backend
+python eval/dump_parity.py; cargo run --release -p engine --example parity   # Python과 결과 비교
+cargo build --release                     # target/release: multilang_tip.dll, backend.exe
+```
+
+- 엔진: 두벌식 오토마타, n-gram, 판정기(한·영)를 Rust로 이식. 공개 데이터 1,200문장에서 Python v0과 분할·변환·상위 3후보가 모두 일치. 토큰당 0.023 ms, 모델 로딩 59 ms.
+- 백엔드: 사용자당 하나, 연결(TIP 인스턴스)마다 조합 상태. JSON 메시지(test / key / flush / reset). 키 왕복 중앙값 0.14 ms.
+- TIP: 키를 백엔드에 보내 조합·확정을 반영. 백엔드가 없으면 DLL 옆 backend.exe를 띄우고, 200 ms 안에 응답이 없으면 키를 먹지 않는다.
+- 배포: `deployd`에 `multilang_tip.dll`, `backend.exe`, `engine_model.json`. 이미 DLL을 불러온 프로세스는 이전 버전을 계속 쓰므로, 시험하는 앱은 다시 시작해야 한다.
+- 메모장 실측: 전환 키 없이 `dkssudgktpdy hello APIfmf.` → `안녕하세요 hello API를.`, `gksrmf test` → `한글 test`.
+  백엔드를 끈 상태에서도 TIP가 자동으로 띄움.
+- 알려진 문제: 패키지 앱(메모장 등)이 띄운 백엔드는 그 앱의 패키지 문맥을 물려받는다 (로그가 가상 폴더로 감, 앱 종료 시 함께 끝날 수 있음).
+  M3 전에 로그온 시 시작으로 바꾼다. 구간별 밑줄(표시 속성)과 모호 표시는 아직 없음.
+
 ## Mozc 연동 개념 검증 (2026-11-23)
 
 공식 GitHub Actions의 Windows 빌드(`Mozc64_x64.msi`, 3.35.6354.100)를 설치하지 않고 풀어서 mozc_server만 띄우고,

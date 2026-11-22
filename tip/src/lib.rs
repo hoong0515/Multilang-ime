@@ -1,14 +1,16 @@
-//! M1 뼈대 TIP (TSF 텍스트 서비스).
+//! TIP (TSF 텍스트 서비스). M2: 키를 백엔드에 보내고, 돌아온 조합·확정을 문서에 쓴다.
 //!
-//! - 알파벳 키를 그대로 조합(composition)에 넣는다. 언어 판정·변환은 아직 없음 (M2에서 백엔드 연결).
-//! - Backspace: 조합에서 한 글자 지우기 / Space: 확정 + 공백 / Enter: 확정 / Esc: 취소.
-//! - 조합 중 다른 키(구두점, 화살표 등)가 오면 먼저 확정하고 그 키는 앱에 넘긴다.
-//! - DllRegisterServer: COM 클래스 + 한국어·일본어 언어 프로필 + 카테고리 등록 (관리자 권한 필요).
+//! - OnTestKeyDown: 백엔드에 "이 키를 먹을지"만 묻는다 (상태 변화 없음).
+//!   조합 중에 다른 키(구두점 등)가 오면 백엔드가 flush_first를 돌려주고, 여기서 먼저 확정한 뒤 키는 앱에 넘긴다.
+//! - OnKeyDown: 백엔드가 키를 처리하고 돌려준 preedit(조합)과 commit(확정)을 동기 편집 세션으로 반영한다.
+//! - 백엔드가 없거나 응답이 늦으면 키를 먹지 않는다 (앱은 IME 없이 입력되는 상태).
 //!
 //! 이 DLL은 모든 앱 프로세스에 로드되므로 패닉이 나면 그 앱이 죽는다.
 //! unwrap/expect를 쓰지 않고, RefCell은 try_borrow로만 접근한다.
 
 #![allow(non_snake_case)]
+
+mod client;
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -16,6 +18,8 @@ use std::mem::ManuallyDrop;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
+use client::Client;
+use ipc::{Key, Request, Response};
 use windows::core::{implement, w, IUnknownImpl, Interface, Ref, BOOL, GUID, HRESULT, IUnknown, PCWSTR, Result};
 use windows::Win32::Foundation::{
     CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, E_POINTER, HMODULE, LPARAM, S_FALSE, S_OK, WPARAM,
@@ -31,8 +35,7 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, HKL, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RETURN, VK_RWIN, VK_SHIFT,
-    VK_SPACE,
+    GetKeyState, HKL, VK_CAPITAL, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::TextServices::*;
 
@@ -54,7 +57,7 @@ extern "system" fn DllMain(module: HMODULE, reason: u32, _reserved: *mut c_void)
     true.into()
 }
 
-fn module_path() -> Vec<u16> {
+pub(crate) fn module_path() -> Vec<u16> {
     let module = HMODULE(DLL_MODULE.load(Ordering::Relaxed) as *mut c_void);
     let mut buf = vec![0u16; 1024];
     let n = unsafe { GetModuleFileNameW(Some(module), &mut buf) } as usize;
@@ -62,44 +65,18 @@ fn module_path() -> Vec<u16> {
     buf
 }
 
-// ---------------------------------------------------------------- 키 분류
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum KeyAction {
-    Ignore,        // 키를 먹지 않음
-    Append(char),  // 조합에 글자 추가
-    Backspace,     // 조합에서 한 글자 지우기
-    CommitSpace,   // 확정 + 공백
-    Commit,        // 확정 (공백 없음)
-    Cancel,        // 조합 취소
-    CommitAndPass, // 확정한 뒤 키는 앱에 넘김
-}
-
+// ---------------------------------------------------------------- 키
 fn key_down(vk: u16) -> bool {
     unsafe { (GetKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
 
-fn key_toggled(vk: u16) -> bool {
-    unsafe { (GetKeyState(vk as i32) & 1) != 0 }
-}
-
-fn classify(vk: u16, composing: bool) -> KeyAction {
-    let ctrl_or_alt = key_down(VK_CONTROL.0) || key_down(VK_MENU.0) || key_down(VK_LWIN.0) || key_down(VK_RWIN.0);
-    if (0x41..=0x5A).contains(&vk) && !ctrl_or_alt {
-        let upper = key_down(VK_SHIFT.0) ^ key_toggled(VK_CAPITAL.0);
-        let c = (vk as u8) as char;
-        return KeyAction::Append(if upper { c } else { c.to_ascii_lowercase() });
-    }
-    if !composing {
-        return KeyAction::Ignore;
-    }
-    match vk {
-        v if v == VK_BACK.0 => KeyAction::Backspace,
-        v if v == VK_SPACE.0 => KeyAction::CommitSpace,
-        v if v == VK_RETURN.0 => KeyAction::Commit,
-        v if v == VK_ESCAPE.0 => KeyAction::Cancel,
-        // 수식 키 자체(Shift, Ctrl, Alt, CapsLock, Win)는 조합을 건드리지 않는다
-        0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0xA0..=0xA5 => KeyAction::Ignore,
-        _ => KeyAction::CommitAndPass,
+fn current_key(wparam: WPARAM) -> Key {
+    Key {
+        vk: wparam.0 as u16,
+        shift: key_down(VK_SHIFT.0),
+        caps: unsafe { (GetKeyState(VK_CAPITAL.0 as i32) & 1) != 0 },
+        ctrl: key_down(VK_CONTROL.0) || key_down(VK_LWIN.0) || key_down(VK_RWIN.0),
+        alt: key_down(VK_MENU.0),
     }
 }
 
@@ -109,33 +86,46 @@ struct State {
     thread_mgr: Option<ITfThreadMgr>,
     client_id: u32,
     composition: Option<ITfComposition>,
-    buffer: String,
 }
 
 #[implement(ITfTextInputProcessorEx, ITfTextInputProcessor, ITfKeyEventSink, ITfCompositionSink)]
 struct TextService {
     state: Rc<RefCell<State>>,
+    backend: RefCell<Client>,
 }
 
 impl TextService {
     fn new() -> Self {
-        Self { state: Rc::new(RefCell::new(State::default())) }
+        Self { state: Rc::new(RefCell::new(State::default())), backend: RefCell::new(Client::new()) }
     }
 }
 
 impl TextService_Impl {
-    fn composing(&self) -> bool {
-        self.state.try_borrow().map(|s| s.composition.is_some()).unwrap_or(false)
+    fn call(&self, req: &Request) -> Option<Response> {
+        self.backend.try_borrow_mut().ok()?.call(req)
     }
 
-    /// 동기 편집 세션으로 문서를 바꾼다 (키 이벤트 콜백 안에서만 호출).
-    fn edit(&self, context: &ITfContext, op: EditOp) -> Result<()> {
+    /// 동기 편집 세션으로 응답(확정·조합)을 문서에 반영한다 (키 이벤트 콜백 안에서만 호출).
+    fn apply(&self, context: &ITfContext, resp: &Response) -> Result<()> {
         let client_id = self.state.try_borrow().map(|s| s.client_id).map_err(|_| E_FAIL)?;
         let sink: ITfCompositionSink = self.to_interface();
-        let session: ITfEditSession =
-            EditSession { context: context.clone(), state: self.state.clone(), sink, op }.into();
+        let session: ITfEditSession = EditSession {
+            context: context.clone(),
+            state: self.state.clone(),
+            sink,
+            commit: resp.commit.clone(),
+            preedit: resp.preedit_text(),
+        }
+        .into();
         let hr = unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READWRITE)? };
         hr.ok()
+    }
+
+    fn reset(&self) {
+        if let Ok(mut s) = self.state.try_borrow_mut() {
+            s.composition = None;
+        }
+        let _ = self.call(&Request::Reset);
     }
 }
 
@@ -148,11 +138,11 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
         let (tm, tid) = match self.state.try_borrow_mut() {
             Ok(mut s) => {
                 s.composition = None;
-                s.buffer.clear();
                 (s.thread_mgr.take(), s.client_id)
             }
             Err(_) => return Ok(()),
         };
+        let _ = self.call(&Request::Reset);
         if let Some(tm) = tm {
             if let Ok(km) = tm.cast::<ITfKeystrokeMgr>() {
                 let _ = unsafe { km.UnadviseKeyEventSink(tid) };
@@ -182,46 +172,28 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     }
 
     fn OnTestKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        let action = classify(wparam.0 as u16, self.composing());
-        if action == KeyAction::CommitAndPass {
-            // 조합 중 다른 키: 여기서 확정하고 키는 앱이 처리하게 둔다
-            if let Ok(ctx) = pic.ok() {
-                let _ = self.edit(ctx, EditOp::Commit { space: false });
+        let Some(t) = self.call(&Request::Test { key: current_key(wparam) }) else {
+            return Ok(false.into());
+        };
+        if t.flush_first {
+            // 조합 중 다른 키: 먼저 확정하고 키는 앱이 처리하게 둔다
+            if let (Ok(ctx), Some(r)) = (pic.ok(), self.call(&Request::Flush)) {
+                let _ = self.apply(ctx, &r);
             }
             return Ok(false.into());
         }
-        Ok((action != KeyAction::Ignore).into())
+        Ok(t.eaten.into())
     }
 
     fn OnKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        let action = classify(wparam.0 as u16, self.composing());
-        let ctx = match pic.ok() {
-            Ok(c) => c,
-            Err(_) => return Ok(false.into()),
+        let Ok(ctx) = pic.ok() else { return Ok(false.into()) };
+        let Some(r) = self.call(&Request::Key { key: current_key(wparam) }) else {
+            return Ok(false.into());
         };
-        let op = match action {
-            KeyAction::Ignore | KeyAction::CommitAndPass => return Ok(false.into()),
-            KeyAction::Append(c) => {
-                if let Ok(mut s) = self.state.try_borrow_mut() {
-                    s.buffer.push(c);
-                }
-                EditOp::Update
-            }
-            KeyAction::Backspace => {
-                let empty = match self.state.try_borrow_mut() {
-                    Ok(mut s) => {
-                        s.buffer.pop();
-                        s.buffer.is_empty()
-                    }
-                    Err(_) => false,
-                };
-                if empty { EditOp::Cancel } else { EditOp::Update }
-            }
-            KeyAction::CommitSpace => EditOp::Commit { space: true },
-            KeyAction::Commit => EditOp::Commit { space: false },
-            KeyAction::Cancel => EditOp::Cancel,
-        };
-        self.edit(ctx, op)?;
+        if !r.eaten {
+            return Ok(false.into());
+        }
+        self.apply(ctx, &r)?;
         Ok(true.into())
     }
 
@@ -239,30 +211,21 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
 }
 
 impl ITfCompositionSink_Impl for TextService_Impl {
-    /// 앱이 조합을 강제로 끝냈을 때 (클릭으로 커서 이동 등): 표시된 대로 확정된 것으로 본다.
+    /// 앱이 조합을 강제로 끝냈을 때 (클릭으로 커서 이동 등): 표시된 대로 확정된 것으로 보고 백엔드 상태를 비운다.
     fn OnCompositionTerminated(&self, _ecwrite: u32, _pcomposition: Ref<ITfComposition>) -> Result<()> {
-        if let Ok(mut s) = self.state.try_borrow_mut() {
-            s.composition = None;
-            s.buffer.clear();
-        }
+        self.reset();
         Ok(())
     }
 }
 
 // ---------------------------------------------------------------- 편집 세션
-#[derive(Clone, Copy)]
-enum EditOp {
-    Update,
-    Commit { space: bool },
-    Cancel,
-}
-
 #[implement(ITfEditSession)]
 struct EditSession {
     context: ITfContext,
     state: Rc<RefCell<State>>,
     sink: ITfCompositionSink,
-    op: EditOp,
+    commit: Option<String>,
+    preedit: String,
 }
 
 fn utf16(s: &str) -> Vec<u16> {
@@ -270,16 +233,24 @@ fn utf16(s: &str) -> Vec<u16> {
 }
 
 impl EditSession {
-    fn ensure_composition(&self, ec: u32) -> Result<ITfComposition> {
-        if let Some(c) = self.state.try_borrow().map_err(|_| E_FAIL)?.composition.clone() {
-            return Ok(c);
-        }
+    fn composition(&self) -> Option<ITfComposition> {
+        self.state.try_borrow().ok()?.composition.clone()
+    }
+
+    fn start_composition(&self, ec: u32) -> Result<ITfComposition> {
         let ins: ITfInsertAtSelection = self.context.cast()?;
         let range = unsafe { ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])? };
         let cc: ITfContextComposition = self.context.cast()?;
         let comp = unsafe { cc.StartComposition(ec, &range, &self.sink)? };
         self.state.try_borrow_mut().map_err(|_| E_FAIL)?.composition = Some(comp.clone());
         Ok(comp)
+    }
+
+    fn end_composition(&self, ec: u32, comp: &ITfComposition) -> Result<()> {
+        if let Ok(mut s) = self.state.try_borrow_mut() {
+            s.composition = None;
+        }
+        unsafe { comp.EndComposition(ec) }
     }
 
     fn caret_to_end(&self, ec: u32, range: &ITfRange) -> Result<()> {
@@ -297,40 +268,40 @@ impl EditSession {
 
 impl ITfEditSession_Impl for EditSession_Impl {
     fn DoEditSession(&self, ec: u32) -> Result<()> {
-        match self.op {
-            EditOp::Update => {
-                let text = self.state.try_borrow().map_err(|_| E_FAIL)?.buffer.clone();
-                let comp = self.ensure_composition(ec)?;
-                let range = unsafe { comp.GetRange()? };
-                unsafe { range.SetText(ec, 0, &utf16(&text))? };
-                self.caret_to_end(ec, &range)
-            }
-            EditOp::Commit { space } => {
-                let (comp, mut text) = {
-                    let mut s = self.state.try_borrow_mut().map_err(|_| E_FAIL)?;
-                    (s.composition.take(), std::mem::take(&mut s.buffer))
-                };
-                let Some(comp) = comp else { return Ok(()) };
-                if space {
-                    text.push(' ');
+        // 1) 확정: 조합이 있으면 그 자리를 확정 텍스트로 바꾸고 조합을 끝낸다. 없으면 커서 위치에 넣는다.
+        if let Some(text) = &self.commit {
+            match self.composition() {
+                Some(comp) => {
+                    let range = unsafe { comp.GetRange()? };
+                    unsafe { range.SetText(ec, 0, &utf16(text))? };
+                    self.caret_to_end(ec, &range)?;
+                    self.end_composition(ec, &comp)?;
                 }
-                let range = unsafe { comp.GetRange()? };
-                unsafe { range.SetText(ec, 0, &utf16(&text))? };
-                self.caret_to_end(ec, &range)?;
-                unsafe { comp.EndComposition(ec) }
-            }
-            EditOp::Cancel => {
-                let comp = {
-                    let mut s = self.state.try_borrow_mut().map_err(|_| E_FAIL)?;
-                    s.buffer.clear();
-                    s.composition.take()
-                };
-                let Some(comp) = comp else { return Ok(()) };
-                let range = unsafe { comp.GetRange()? };
-                unsafe { range.SetText(ec, 0, &[])? };
-                unsafe { comp.EndComposition(ec) }
+                None if !text.is_empty() => {
+                    let ins: ITfInsertAtSelection = self.context.cast()?;
+                    let range = unsafe { ins.InsertTextAtSelection(ec, Default::default(), &utf16(text))? };
+                    self.caret_to_end(ec, &range)?;
+                }
+                None => {}
             }
         }
+        // 2) 조합: 남은 조합이 있으면 표시, 없으면 (확정 없이 끝난 경우) 조합을 지우고 끝낸다.
+        if !self.preedit.is_empty() {
+            let comp = match self.composition() {
+                Some(c) => c,
+                None => self.start_composition(ec)?,
+            };
+            let range = unsafe { comp.GetRange()? };
+            unsafe { range.SetText(ec, 0, &utf16(&self.preedit))? };
+            self.caret_to_end(ec, &range)?;
+        } else if self.commit.is_none() {
+            if let Some(comp) = self.composition() {
+                let range = unsafe { comp.GetRange()? };
+                unsafe { range.SetText(ec, 0, &[])? };
+                self.end_composition(ec, &comp)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -371,7 +342,7 @@ extern "system" fn DllGetClassObject(rclsid: *const GUID, riid: *const GUID, ppv
 
 #[unsafe(no_mangle)]
 extern "system" fn DllCanUnloadNow() -> HRESULT {
-    // M1: 단순하게 언로드하지 않는다 (객체 수 추적은 이후에)
+    // 단순하게 언로드하지 않는다 (객체 수 추적은 이후에)
     S_FALSE
 }
 

@@ -7,3 +7,5 @@ third_party/
 poc/mozc/gen/
 target/
 deploy/
+data/engine_model.json
+data/parity_koen.jsonl
