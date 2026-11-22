@@ -1,0 +1,12 @@
+[package]
+name = "mozc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+prost = "0.14.6"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_IO"] }
+
+[build-dependencies]
+prost-build = "0.14.6"
+protoc-bin-vendored = "3.3.0"

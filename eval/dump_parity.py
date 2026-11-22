@@ -1,4 +1,4 @@
-"""Rust 엔진과 Python v0 판정기의 결과 비교용 기준 파일을 만든다 (한·영).
+"""Rust 엔진과 Python v0 판정기의 결과 비교용 기준 파일을 만든다 (한·영·일).
 
 사용: python eval/dump_parity.py [문장 수/파일] -> data/parity_koen.jsonl
 """
@@ -12,12 +12,12 @@ from ime_v0.detector import Detector, Params  # noqa: E402
 from ime_v0.models import load  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-FILES = ["ko_news", "ko_review", "ko_web", "en_news"]
+FILES = ["ko_news", "ko_review", "en_news", "ja_news", "ja_news_bunsetsu", "ja_tatoeba_bunsetsu"]
 
 
 def main(per_file: int = 300):
     p = json.loads((ROOT / "data/public/best_params_public_v4.json").read_text())
-    det = Detector(load(), Params(**p), langs=("en", "ko"))
+    det = Detector(load(), Params(**p), langs=("en", "ko", "ja"))
     rnd = random.Random(7)
     out = []
     for f in FILES:

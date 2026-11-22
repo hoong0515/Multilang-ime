@@ -26,7 +26,7 @@ fn main() {
         }
     };
     println!("model load: {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
-    let det = Detector::new(&models, vec![Lang::En, Lang::Ko]);
+    let det = Detector::new(&models, vec![Lang::En, Lang::Ko, Lang::Ja]);
     let text = std::fs::read_to_string(root.join("data/parity_koen.jsonl")).unwrap_or_default();
 
     let (mut n, mut seg_ok, mut top3_ok, mut tokens) = (0, 0, 0, 0usize);

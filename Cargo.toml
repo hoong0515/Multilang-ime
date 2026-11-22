@@ -1,5 +1,5 @@
 [workspace]
-members = ["tip", "engine", "backend", "ipc"]
+members = ["tip", "engine", "backend", "ipc", "mozc"]
 resolver = "3"
 
 [profile.release]

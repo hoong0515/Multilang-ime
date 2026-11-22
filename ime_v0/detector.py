@@ -34,6 +34,7 @@ PARTICLES = {"ko": KO_PARTICLES, "ja": JA_PARTICLES}
 JA_EDGE = ("の", "を", "が", "は", "に", "で", "と", "も", "へ", "や", "から", "まで", "より", "って", "など")
 JA_TAIL = JA_PARTICLES | {"には", "では", "とは", "への", "での", "からの", "までの", "にも", "へと", "とか", "なら"}
 LOWER_AFTER_CAPS = re.compile(r"[A-Z]{2,}[a-z]{3,}$")  # LiDARwonose, APIgun 처럼 약어 뒤로 소문자가 길게 붙은 모양
+EN_WORD_KEEP = 3.0  # 이 빈도(zipf) 이상의 영어 단어는 "소문자 영어 + 조사"로 쪼개지 않는다
 LATTICE_K = 3  # 위치·언어마다 남길 경로 수 (후보창에 다양한 분할을 올리기 위해)
 # 한 토큰 안에서 바로 이어지지 않는 언어 쌍 (한국어와 일본어를 붙여 치는 경우는 없다고 본다)
 NO_SPLIT = {("ko", "ja"), ("ja", "ko")}
@@ -256,6 +257,9 @@ class Detector:
             # 소문자 영어 다음은 토큰 끝까지 이어지는 한국어 어미나 일본어 조사뿐
             return ("ko" in self.langs and n - j <= self.p.lower_suffix_max) or                    ("ja" in self.langs and n - j <= 8)
 
+        # 토큰 전체가 흔한 영어 단어면 영어로 시작하는 분할을 만들지 않는다 (She -> Sへ, State -> Sたて 방지)
+        if start == "en" and self.m.en_zipf.get(keys.lower(), 0.0) >= EN_WORD_KEEP:
+            return []
         for j in range(min_len(start), n + 1):
             if may_end(start, 0, j):
                 push(j, start, self.score(start, keys[:j]), [(start, 0, j)])
@@ -271,6 +275,9 @@ class Detector:
                         extra = 0.0
                         if l == "en" and not any(upper[path[-1][1]:j]):
                             # 소문자 영어 뒤: 토큰 끝까지 이어지는 한국어 어미(vga카드로는) 또는 일본어 조사(illと, cmに)
+                            # 단, 토큰 전체가 흔한 영어 단어면 쪼개지 않는다 (into -> in|と 방지)
+                            if self.m.en_zipf.get(keys.lower(), 0.0) >= EN_WORD_KEEP:
+                                continue
                             if l2 == "ko" and n - j <= self.p.lower_suffix_max:
                                 pass
                             elif l2 == "ja" and self.render("ja", keys[j:]) in JA_TAIL:

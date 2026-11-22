@@ -1,8 +1,8 @@
-//! 언어 판정기 (ime_v0/detector.py 이식, 한국어·영어).
+//! 언어 판정기 (ime_v0/detector.py 이식, 한국어·영어·일본어).
 //!
 //! 토큰(알파벳 덩어리)마다 후보(언어별 단일 + 토큰 안 언어 래티스)를 만들고,
 //! 문장 전체는 언어가 바뀔 때 벌점을 주는 비터비로 고른다.
-//! 일본어는 M4에서 로마자 변환기와 함께 붙인다 (Lang::Ja 점수는 아직 없음).
+//! 일본어는 로마자를 가나로 바꾼 결과로 판정한다 (한자 변환은 백엔드가 Mozc에 맡긴다).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::hangul::compose;
+use crate::romaji::parse;
 use crate::model::{Models, Params};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -36,6 +37,13 @@ const EXPRESSIVE_JAMO: &str = "ㅋㅎㅠㅜㄷㅇㄱㅅㅂㅈㄴㅊ";
 const KO_SHIFT_KEYS: &str = "REQTWOP";
 const KO_PARTICLES: &str = "을 를 이 가 은 는 의 에 에서 으로 로 와 과 도 만 까지 부터 이나 나 이랑 랑 하고 처럼 보다 한테 에게 께 \
 이다 이고 이라 이라서 이라고 라고 인 인데 이면 면 이야 야 이에요 예요 입니다 같은 같이 쪽 용 적 적인 하다 하는 해서 했다 한 할 함 해 됨 된 되는";
+const JA_PARTICLES: &str = "を が に で は の と も へ から まで より って です だ じゃ な っぽい する して した さん くん ちゃん \
+とか みたい だけ しか でも では には とは のは を する すき がすき";
+/// 영어 바로 뒤에 붙는 일본어 조사 (Folioの, LiDARを, illと, cmに)
+const JA_EDGE: [&str; 15] = ["の", "を", "が", "は", "に", "で", "と", "も", "へ", "や", "から", "まで", "より", "って", "など"];
+const JA_TAIL_EXTRA: [&str; 11] = ["には", "では", "とは", "への", "での", "からの", "までの", "にも", "へと", "とか", "なら"];
+/// 이 빈도(zipf) 이상의 영어 단어는 영어로 시작하는 분할을 만들지 않는다 (She -> Sへ, into -> in|と 방지)
+const EN_WORD_KEEP: f64 = 3.0;
 const LATTICE_K: usize = 3;
 
 pub type Form = Vec<(Lang, usize)>;
@@ -150,8 +158,13 @@ pub struct Detector<'m> {
     pub history: Option<SharedHistory>,
     memo: RefCell<HashMap<(Lang, String), f64>>,
     particles_ko: HashSet<&'static str>,
+    particles_ja: HashSet<&'static str>,
+    ja_tail: HashSet<&'static str>,
+    ja_memo: RefCell<HashMap<String, f64>>,
     /// 언어 전환 벌점 배율. 직전 단어들이 같은 언어로 이어질수록 키운다 (set_language_run).
     switch_scale: f64,
+    /// 글자 뒤의 '-'를 토큰 안에 둔다 (일본어 장음 ー: ko-hi- -> コーヒー). 평가와 맞추기 위해 기본은 끔.
+    pub dash_in_tokens: bool,
 }
 
 /// 같은 언어가 이어진 단어 수에 따른 전환 벌점 가중치 (공개·트윗 데이터에서 0.3이 어느 셋도 나빠지지 않음).
@@ -188,7 +201,11 @@ impl<'m> Detector<'m> {
             history: None,
             memo: RefCell::new(HashMap::new()),
             particles_ko: KO_PARTICLES.split_whitespace().collect(),
+            particles_ja: JA_PARTICLES.split_whitespace().collect(),
+            ja_tail: JA_PARTICLES.split_whitespace().chain(JA_TAIL_EXTRA).collect(),
+            ja_memo: RefCell::new(HashMap::new()),
             switch_scale: 1.0,
+            dash_in_tokens: false,
         }
     }
 
@@ -243,24 +260,70 @@ impl<'m> Detector<'m> {
         self.memo_put(Lang::Ko, keys, s)
     }
 
+    fn score_ja(&self, keys: &str) -> f64 {
+        if let Some(v) = self.memo_get(Lang::Ja, keys) {
+            return v;
+        }
+        let Some(ja) = &self.m.ja else { return self.memo_put(Lang::Ja, keys, f64::NEG_INFINITY) };
+        let mut s = ja.logprob(&keys.to_lowercase());
+        let r = parse(keys);
+        s -= self.p.ja_leftover * r.leftover as f64;
+        s -= self.p.shift_noise * keys.chars().filter(|c| c.is_uppercase()).count() as f64;
+        let z = self.ja_word_zipf(&r.kana);
+        s += self.p.ja_dict * (z - self.p.zipf_floor).max(0.0);
+        self.memo_put(Lang::Ja, keys, s)
+    }
+
+    /// 가나 읽기의 사전 빈도. 문절(단어 + 조사·조동사)도 잡도록 두 조각으로 나뉘는 경우까지 본다.
+    fn ja_word_zipf(&self, kana: &str) -> f64 {
+        if let Some(v) = self.ja_memo.try_borrow().ok().and_then(|m| m.get(kana).copied()) {
+            return v;
+        }
+        let zd = &self.m.ja_zipf;
+        let mut z = zd.get(kana).copied().unwrap_or(0.0);
+        let cs: Vec<char> = kana.chars().collect();
+        if cs.len() <= 12 {
+            for i in 1..cs.len() {
+                let a: String = cs[..i].iter().collect();
+                let b: String = cs[i..].iter().collect();
+                if let (Some(&za), Some(&zb)) = (zd.get(&a), zd.get(&b)) {
+                    if za != 0.0 && zb != 0.0 {
+                        z = z.max(za.min(zb) - 0.5);
+                    }
+                }
+            }
+        }
+        if let Ok(mut m) = self.ja_memo.try_borrow_mut() {
+            m.insert(kana.to_string(), z);
+        }
+        z
+    }
+
     pub fn score(&self, lang: Lang, keys: &str) -> f64 {
         match lang {
             Lang::En => self.score_en(keys),
             Lang::Ko => self.score_ko(keys),
-            Lang::Ja => f64::NEG_INFINITY, // M4에서 구현
+            Lang::Ja => self.score_ja(keys),
         }
     }
 
     pub fn render(lang: Lang, keys: &str) -> String {
         match lang {
             Lang::Ko => compose(keys).text,
-            Lang::En | Lang::Ja => keys.to_string(),
+            Lang::Ja => parse(keys).kana,
+            Lang::En => keys.to_string(),
         }
     }
 
     fn suffix(&self, lang: Lang, keys: &str) -> f64 {
         let mut s = self.score(lang, keys);
-        if lang == Lang::Ko && self.particles_ko.contains(Self::render(lang, keys).as_str()) {
+        let r = Self::render(lang, keys);
+        let is_particle = match lang {
+            Lang::Ko => self.particles_ko.contains(r.as_str()),
+            Lang::Ja => self.particles_ja.contains(r.as_str()),
+            Lang::En => false,
+        };
+        if is_particle {
             s += self.p.particle;
         }
         s
@@ -312,6 +375,10 @@ impl<'m> Detector<'m> {
             (has_ko && n - j <= self.p.lower_suffix_max) || (has_ja && n - j <= 8)
         };
 
+        // 토큰 전체가 흔한 영어 단어면 영어로 시작하는 분할을 만들지 않는다
+        if start == Lang::En && self.m.en_zipf.get(&keys.to_lowercase()).copied().unwrap_or(0.0) >= EN_WORD_KEEP {
+            return Vec::new();
+        }
         for j in min_len(start)..=n {
             if may_end(start, 0, j) {
                 let s = self.score(start, &keys_slice(&cs, 0, j));
@@ -336,8 +403,12 @@ impl<'m> Detector<'m> {
                             if l == Lang::En && !upper[seg_start..j].iter().any(|&u| u) {
                                 if l2 == Lang::Ko && n - j <= self.p.lower_suffix_max {
                                     // 소문자 영어 + 한국어 어미 (vga카드로는)
+                                } else if l2 == Lang::Ja
+                                    && self.ja_tail.contains(Self::render(Lang::Ja, &keys_slice(&cs, j, n)).as_str())
+                                {
+                                    // 소문자 영어 + 일본어 조사 (illと, cmに)
                                 } else {
-                                    continue; // 일본어 조사 경우는 M4에서
+                                    continue;
                                 }
                                 ks = vec![n];
                                 extra = self.p.lower_en_split;
@@ -347,7 +418,13 @@ impl<'m> Detector<'m> {
                                     continue;
                                 }
                                 let seg = keys_slice(&cs, j, k);
-                                let v = sc + self.suffix(l2, &seg) - self.p.split - extra;
+                                let mut v = sc + self.suffix(l2, &seg) - self.p.split - extra;
+                                if l2 == Lang::Ja && l == Lang::En {
+                                    let kana = Self::render(Lang::Ja, &seg);
+                                    if JA_EDGE.iter().any(|e| kana.starts_with(e)) {
+                                        v += self.p.ja_edge;
+                                    }
+                                }
                                 let mut p2 = path.clone();
                                 p2.push((l2, j, k));
                                 push(&mut best, k, l2, v, p2);
@@ -424,7 +501,7 @@ impl<'m> Detector<'m> {
             Other(String),
             Cand(usize, usize), // (토큰 번호, 후보 번호)
         }
-        let toks = tokenize(keys);
+        let toks = if self.dash_in_tokens { tokenize_with_dash(keys) } else { tokenize(keys) };
         let mut states: Vec<(Option<Lang>, f64, Vec<Item>)> = vec![(prev_lang, 0.0, Vec::new())];
         let mut cand_cache: Vec<Vec<Candidate>> = Vec::new();
         for t in toks {
@@ -501,6 +578,25 @@ impl<'m> Detector<'m> {
 
 fn keys_slice(cs: &[char], i: usize, j: usize) -> String {
     cs[i..j].iter().collect()
+}
+
+/// tokenize와 같되, 글자 바로 뒤에 오는 '-'는 알파벳 덩어리에 포함한다 (ko-hi-).
+pub fn tokenize_with_dash(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_alpha: Option<bool> = None;
+    for ch in s.chars() {
+        let a = ch.is_ascii_alphabetic() || (ch == '-' && cur_alpha == Some(true));
+        if cur_alpha.is_some_and(|x| x != a) {
+            out.push(std::mem::take(&mut cur));
+        }
+        cur.push(ch);
+        cur_alpha = Some(a);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 /// 알파벳 덩어리와 그 외 덩어리로 나눈다 ([A-Za-z]+|[^A-Za-z]+).

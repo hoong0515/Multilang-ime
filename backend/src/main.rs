@@ -30,7 +30,7 @@ use windows::Win32::System::Pipes::{
 };
 use windows::Win32::System::Threading::CreateMutexW;
 
-fn log(msg: &str) {
+pub(crate) fn log(msg: &str) {
     let dir = std::env::var("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
     let dir = dir.join("multilang-ime");
     let _ = std::fs::create_dir_all(&dir);
@@ -79,7 +79,9 @@ fn data_dir() -> PathBuf {
 
 fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory) {
     let h = HANDLE(h.0 as *mut c_void);
-    let mut session = Session::new(models, history, Some(data_dir().join("history.json")));
+    let mozc_server = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("mozc").join("mozc_server.exe")));
+    let mozc_server = mozc_server.filter(|p| p.exists());
+    let mut session = Session::new(models, history, Some(data_dir().join("history.json")), mozc_server);
     while let Some(msg) = read_message(h) {
         let resp = match serde_json::from_slice::<Request>(&msg) {
             Ok(Request::Test { key }) => session.test(&key),
