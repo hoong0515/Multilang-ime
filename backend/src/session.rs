@@ -27,13 +27,15 @@ use engine::model::Models;
 use engine::romaji::parse;
 use ipc::{CandidateList, Key, PreeditSegment, Response};
 
-const MAX_CANDIDATES: usize = 9;
+const MAX_CANDIDATES: usize = 16;
 const PICK_KEYS: u16 = 5; // 숫자 1~5
 /// 낱자로 흔히 쓰는 자모 (ㅋㅋ, ㅎㅎ, ㅠㅠ 등). 이것만 남는 후보는 정상 후보로 본다.
 const EXPRESSIVE_JAMO: &str = "ㅋㅎㅠㅜㄷㅇㄱㅅㅂㅈㄴㅊ";
 const MOZC_RETRY: Duration = Duration::from_secs(30);
 const FULLWIDTH: &str = "全角";
 const HANJA: &str = "漢";
+const SYMBOL: &str = "記号";
+const VK_TAB: u16 = 0x09;
 
 const VK_BACK: u16 = 0x08;
 const VK_RETURN: u16 = 0x0D;
@@ -318,6 +320,8 @@ struct Choice {
     texts: Vec<String>,
     mozc_pick: Option<i32>,
     label: String,
+    /// 후보창에서 Tab으로 건너뛰는 묶음 (en, ko, ja, mix, 기호 종류 등)
+    group: String,
 }
 
 impl Choice {
@@ -347,6 +351,32 @@ fn fullwidth(s: &str) -> String {
         .collect()
 }
 
+/// Tab: 다음(forward) 또는 이전 묶음의 첫 후보 위치.
+fn group_jump(list: &[Choice], sel: usize, forward: bool) -> usize {
+    let n = list.len();
+    if n == 0 {
+        return 0;
+    }
+    let starts: Vec<usize> = (0..n).filter(|&i| i == 0 || list[i].group != list[i - 1].group).collect();
+    let cur = starts.iter().rposition(|&st| st <= sel).unwrap_or(0);
+    let next = if forward { (cur + 1) % starts.len() } else { (cur + starts.len() - 1) % starts.len() };
+    starts[next]
+}
+
+/// Shift 탭으로 처음 열 때의 선택: 일본어·기호 묶음이면 다음 후보, 그 밖에는 다음 언어 묶음의 첫 후보.
+fn initial_selection(list: &[Choice]) -> usize {
+    if list.len() < 2 {
+        return 0;
+    }
+    if list[0].group == "ja" || list[0].group == "en+ja" || list[0].cand.form.is_empty() {
+        return 1;
+    }
+    match group_jump(list, 0, true) {
+        0 => 1,
+        i => i,
+    }
+}
+
 // ---------------------------------------------------------------- 키
 
 fn is_letter(k: &Key) -> bool {
@@ -369,21 +399,111 @@ fn is_dash(k: &Key) -> bool {
     k.vk == VK_OEM_MINUS && !k.shift && !k.ctrl && !k.alt
 }
 
-/// 미국 배열 기준 구두점 키 → 글자.
-fn punct(k: &Key) -> Option<char> {
+/// 미국 배열 기준 숫자·기호 키 → 글자 (글자 키 제외).
+fn symbol_char(k: &Key) -> Option<char> {
     if k.ctrl || k.alt {
         return None;
     }
-    Some(match (k.vk, k.shift) {
-        (0xBE, false) => '.',
-        (0xBC, false) => ',',
-        (0xDB, false) => '[',
-        (0xDD, false) => ']',
-        (0xBF, false) => '/',
-        (0xBF, true) => '?',
-        (0x31, true) => '!',
+    let (lo, hi) = match k.vk {
+        0x30..=0x39 => {
+            let d = (k.vk - 0x30) as usize;
+            ((b'0' + d as u8) as char, b")!@#$%^&*("[d] as char)
+        }
+        0xBA => (';', ':'),
+        0xBB => ('=', '+'),
+        0xBC => (',', '<'),
+        0xBD => ('-', '_'),
+        0xBE => ('.', '>'),
+        0xBF => ('/', '?'),
+        0xC0 => ('`', '~'),
+        0xDB => ('[', '{'),
+        0xDC => ('\\', '|'),
+        0xDD => (']', '}'),
+        0xDE => ('\'', '"'),
         _ => return None,
-    })
+    };
+    Some(if k.shift { hi } else { lo })
+}
+
+/// 기호 조합의 후보: (텍스트, 라벨). 첫 번째가 기본 표시.
+fn symbol_variants(sym: &str, ja: bool) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut push = |t: String, l: &str| {
+        if !t.is_empty() && !out.iter().any(|(x, _)| *x == t) {
+            out.push((t, l.to_string()));
+        }
+    };
+    let ja_all: Option<String> = sym.chars().map(ja_punct).collect();
+    if ja {
+        if let Some(j) = &ja_all {
+            push(j.clone(), "ja");
+        }
+    }
+    push(sym.to_string(), "en");
+    if let Some(j) = &ja_all {
+        push(j.clone(), "ja");
+    }
+    push(fullwidth(sym), FULLWIDTH);
+    let special: &[&str] = match sym {
+        "." => &["…", "・", "·"],
+        "," => &["、", "，"],
+        "!" => &["‼", "¡"],
+        "?" => &["⁇", "⁉", "¿"],
+        "-" => &["ー", "—", "–", "―", "‐"],
+        "~" => &["〜", "～", "≈"],
+        "/" => &["・", "÷", "／"],
+        "<" => &["〈", "《", "≪", "←", "≤"],
+        ">" => &["〉", "》", "≫", "→", "≥"],
+        "[" => &["「", "『", "【", "〔"],
+        "]" => &["」", "』", "】", "〕"],
+        "{" => &["〈"],
+        "}" => &["〉"],
+        "(" => &["「"],
+        ")" => &["」"],
+        "*" => &["※", "×", "★", "☆"],
+        "\"" => &["“", "”", "「", "」"],
+        "'" => &["‘", "’", "『", "』"],
+        "^" => &["↑"],
+        "+" => &["±"],
+        "=" => &["≠", "≒", "≈"],
+        "%" => &["‰"],
+        "#" => &["♯"],
+        "$" => &["￦", "￥", "€", "£"],
+        "\\" => &["￦", "￥"],
+        "|" => &["│"],
+        ":" => &["∵", "∴"],
+        "->" => &["→", "⇒"],
+        "<-" => &["←", "⇐"],
+        "=>" => &["⇒"],
+        "<=" => &["≤", "⇐"],
+        ">=" => &["≥"],
+        "<>" => &["↔", "⇔"],
+        "..." => &["…"],
+        "!?" => &["⁉"],
+        "!!" => &["‼"],
+        "--" => &["—", "―"],
+        _ => &[],
+    };
+    for x in special {
+        push(x.to_string(), SYMBOL);
+    }
+    // 한 자리 숫자: 원 숫자, 한자 숫자
+    if let [c] = sym.chars().collect::<Vec<_>>()[..] {
+        if let Some(d) = c.to_digit(10) {
+            push(["⓪", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"][d as usize].to_string(), SYMBOL);
+            push(["〇", "一", "二", "三", "四", "五", "六", "七", "八", "九"][d as usize].to_string(), "ja");
+        }
+    }
+    out
+}
+
+fn symbol_choice(sym: &str, text: String, label: String) -> Choice {
+    let cand = Candidate {
+        form: Vec::new(),
+        segments: vec![engine::detector::Segment { lang: None, keys: sym.to_string(), text: text.clone() }],
+        score: 0.0,
+    };
+    Choice { cand, texts: vec![text], mozc_pick: None, group: label.clone(), label }
 }
 
 /// 일본어 문맥에서 바꿔 넣는 기호.
@@ -405,6 +525,7 @@ fn ja_punct(c: char) -> Option<char> {
 pub struct Session<'m> {
     det: Detector<'m>,
     keys: String,                       // 아직 확정하지 않은 친 키 그대로
+    sym: String,                        // 조합 중인 기호·숫자 (keys와 동시에 쓰지 않는다)
     raw: bool,                          // 친 키 그대로 보기 중
     prev: Option<Lang>,                 // 직전에 확정한 언어 (문맥)
     run: usize,                         // 같은 언어로 이어서 확정한 단어 수 (언어 가중치)
@@ -423,6 +544,7 @@ impl<'m> Session<'m> {
         Self {
             det,
             keys: String::new(),
+            sym: String::new(),
             raw: false,
             prev: None,
             run: 0,
@@ -435,11 +557,16 @@ impl<'m> Session<'m> {
     }
 
     fn composing(&self) -> bool {
-        !self.keys.is_empty()
+        !self.keys.is_empty() || !self.sym.is_empty()
     }
 
     /// 지금 일본어 문맥인가: 조합 중이면 표시 중인 후보의 마지막 구간, 아니면 직전에 확정한 언어.
     fn ja_context(&self) -> bool {
+        if !self.sym.is_empty() {
+            let c = self.open.as_ref().and_then(|(l, i)| l.get(*i)).or(self.pinned.as_ref());
+            // 일본어 기호(。、？ 등)·전각을 골랐거나, 직전 단어가 일본어면 일본어 문맥
+            return c.is_some_and(|c| c.label == "ja" || c.label == FULLWIDTH) || self.prev == Some(Lang::Ja);
+        }
         if self.composing() {
             if self.raw {
                 return false;
@@ -461,24 +588,22 @@ impl<'m> Session<'m> {
         if is_letter(k) {
             return eat;
         }
-        if is_dash(k) && self.composing() && self.ja_context() {
+        if is_dash(k) && !self.keys.is_empty() && self.ja_context() {
             return eat; // 장음 ー
         }
-        if let Some(c) = punct(k) {
-            if ja_punct(c).is_some() && self.ja_context() {
-                return eat;
+        if let (Some(d), Some((list, _))) = (digit(k), &self.open) {
+            if d < list.len() {
+                return eat; // 후보 고르기
             }
+        }
+        if symbol_char(k).is_some() {
+            return eat; // 기호·숫자도 조합에 넣는다 (Shift 탭으로 변형)
         }
         if !self.composing() || is_modifier(k.vk) {
             return Response::default();
         }
-        if let (Some(d), Some((list, _))) = (digit(k), &self.open) {
-            if d < list.len() {
-                return eat;
-            }
-        }
-        // 후보창이 열려 있으면 방향키로 후보를 옮긴다 (없으면 아래에서 먼저 확정하고 앱에 넘긴다)
-        if self.open.is_some() && matches!(k.vk, VK_LEFT..=VK_DOWN) && !k.ctrl && !k.alt {
+        // 후보창이 열려 있으면 방향키·Tab으로 후보를 옮긴다 (없으면 아래에서 먼저 확정하고 앱에 넘긴다)
+        if self.open.is_some() && (matches!(k.vk, VK_LEFT..=VK_DOWN) || k.vk == VK_TAB) && !k.ctrl && !k.alt {
             return eat;
         }
         match k.vk {
@@ -492,7 +617,7 @@ impl<'m> Session<'m> {
             let c = (k.vk as u8) as char;
             let ch = if k.shift ^ k.caps { c } else { c.to_ascii_lowercase() };
             // 후보창이 열린 채 글자를 치면 고른 후보로 확정하고 새 조합을 시작한다
-            let committed = if self.open.is_some() { Some(self.commit("")) } else { None };
+            let committed = if self.open.is_some() || !self.sym.is_empty() { Some(self.commit("")) } else { None };
             self.pinned = None;
             self.keys.push(ch);
             let mut r = self.respond();
@@ -502,26 +627,11 @@ impl<'m> Session<'m> {
             }
             return r;
         }
-        if is_dash(k) && self.composing() && self.ja_context() {
+        if is_dash(k) && !self.keys.is_empty() && self.ja_context() {
             self.open = None;
             self.pinned = None;
             self.keys.push('-');
             return self.respond();
-        }
-        if let Some(c) = punct(k) {
-            if let Some(jp) = ja_punct(c) {
-                if self.ja_context() {
-                    let mut r = if self.composing() { self.commit("") } else { Response { eaten: true, ..Default::default() } };
-                    let mut text = r.commit.take().unwrap_or_default();
-                    text.push(jp);
-                    r.commit_segments.push(seg(&jp.to_string(), "ja"));
-                    r.commit = Some(text);
-                    return r;
-                }
-            }
-        }
-        if !self.composing() {
-            return Response::default();
         }
         if let Some(d) = digit(k) {
             if let Some((list, _)) = &self.open {
@@ -531,6 +641,24 @@ impl<'m> Session<'m> {
                     return self.respond();
                 }
             }
+        }
+        if let Some(ch) = symbol_char(k) {
+            // 글자 조합, 또는 후보를 고른 기호 조합은 먼저 확정하고 기호 조합을 시작/이어 간다
+            let committed = if !self.keys.is_empty() || self.open.is_some() || self.pinned.is_some() {
+                Some(self.commit(""))
+            } else {
+                None
+            };
+            self.sym.push(ch);
+            let mut r = self.respond();
+            if let Some(c) = committed {
+                r.commit = c.commit;
+                r.commit_segments = c.commit_segments;
+            }
+            return r;
+        }
+        if !self.composing() {
+            return Response::default();
         }
         if let Some((list, sel)) = &mut self.open {
             if !k.ctrl && !k.alt {
@@ -542,6 +670,11 @@ impl<'m> Session<'m> {
                     }
                     VK_UP | VK_LEFT => {
                         *sel = (*sel + n - 1) % n;
+                        return self.respond();
+                    }
+                    VK_TAB => {
+                        // 다음(Shift+Tab: 이전) 언어 묶음의 첫 후보로
+                        *sel = group_jump(list, *sel, !k.shift);
                         return self.respond();
                     }
                     _ => {}
@@ -556,6 +689,9 @@ impl<'m> Session<'m> {
                     self.open = None;
                     self.pinned = None;
                     self.raw = true;
+                } else if !self.sym.is_empty() {
+                    self.pinned = None;
+                    self.sym.pop();
                 } else {
                     self.pinned = None;
                     self.keys.pop();
@@ -598,7 +734,7 @@ impl<'m> Session<'m> {
                 if list.is_empty() {
                     return self.respond();
                 }
-                let sel = if list.len() > 1 { 1 } else { 0 };
+                let sel = initial_selection(&list);
                 self.raw = false;
                 self.pinned = None;
                 self.open = Some((list, sel));
@@ -618,6 +754,7 @@ impl<'m> Session<'m> {
 
     fn clear(&mut self) {
         self.keys.clear();
+        self.sym.clear();
         self.raw = false;
         self.open = None;
         self.pinned = None;
@@ -646,74 +783,110 @@ impl<'m> Session<'m> {
     }
 
     fn choice(&mut self, c: &Candidate) -> Choice {
-        Choice { texts: self.display_texts(c), cand: c.clone(), mozc_pick: None, label: label(c) }
+        let group = if c.form.len() == 1 { c.start().code().to_string() } else { "mix".to_string() };
+        Choice { texts: self.display_texts(c), cand: c.clone(), mozc_pick: None, label: label(c), group }
     }
 
-    /// 현재 키 입력의 후보 (텍스트가 같은 후보는 하나만, 최대 9개).
+    /// 현재 입력의 후보. 문맥과 상관없이 언어마다 묶음을 만든다 (1위 언어 묶음 먼저):
+    /// 영어 = 그대로 + 전각, 한국어 = 한글 + 한자, 일본어 = Mozc 후보. 그 뒤 섞인 형태, 깨진 한글.
     fn candidate_list(&mut self) -> Vec<Choice> {
+        if !self.sym.is_empty() {
+            let sym = self.sym.clone();
+            return symbol_variants(&sym, self.prev == Some(Lang::Ja))
+                .into_iter()
+                .map(|(t, l)| symbol_choice(&sym, t, l))
+                .collect();
+        }
         let dec = self.det.decide(&self.keys, self.prev);
         let Some(t) = dec.tokens.first().cloned() else { return Vec::new() };
         let mut out: Vec<Choice> = Vec::new();
+        fn add(out: &mut Vec<Choice>, ch: Choice) {
+            if out.len() < MAX_CANDIDATES && !out.iter().any(|o| o.text() == ch.text()) {
+                out.push(ch);
+            }
+        }
 
-        // 일본어 한 구간(또는 영단어 + 일본어)이면 Mozc 후보를 먼저 (첫 문절 후보 + 나머지 문절)
-        let segs = &t.chosen.segments;
-        let ja_form = match t.chosen.form.as_slice() {
-            [(Lang::Ja, _)] => Some(false),
-            [(Lang::En, _), (Lang::Ja, _)] => Some(true),
-            _ => None,
-        };
-        if let Some(after_noun) = ja_form {
-            let ja = &segs[segs.len() - 1];
-            let p = parse(&ja.keys);
+        // 영단어 + 일본어로 판정됐으면 그 Mozc 후보 묶음을 먼저
+        let segs = t.chosen.segments.clone();
+        if let [(Lang::En, _), (Lang::Ja, _)] = t.chosen.form.as_slice() {
+            let p = parse(&segs[1].keys);
             if p.leftover == 0 {
-                if let Some(conv) = self.mozc.conversion_ctx(&p.kana, &ja.keys, after_noun) {
+                if let Some(conv) = self.mozc.conversion_ctx(&p.kana, &segs[1].keys, true) {
                     let rest: String = conv.segments.iter().skip(1).cloned().collect();
-                    let label = if after_noun { "en+ja" } else { "ja" };
-                    for (id, v) in conv.candidates.iter().take(MAX_CANDIDATES - 2) {
-                        let mut texts = if after_noun { vec![segs[0].text.clone()] } else { Vec::new() };
-                        texts.push(format!("{v}{rest}"));
-                        let ch = Choice { cand: t.chosen.clone(), texts, mozc_pick: Some(*id), label: label.into() };
-                        if !out.iter().any(|o| o.text() == ch.text()) {
-                            out.push(ch);
-                        }
+                    for (id, v) in conv.candidates.iter().take(6) {
+                        let texts = vec![segs[0].text.clone(), format!("{v}{rest}")];
+                        let ch = Choice { cand: t.chosen.clone(), texts, mozc_pick: Some(*id), label: "en+ja".into(), group: "en+ja".into() };
+                        add(&mut out, ch);
                     }
                 }
             }
         }
-        // 언어 후보 (완성되지 않은 한국어 글자가 섞인 후보는 뒤로)
-        let mut lang_choices: Vec<Choice> = Vec::new();
-        for c in std::iter::once(&t.chosen).chain(t.ranked.iter()) {
-            if out.len() + lang_choices.len() >= MAX_CANDIDATES {
-                break;
+        // 한 언어 후보: 순위대로, 언어마다 한 번
+        let all: Vec<Candidate> = std::iter::once(t.chosen.clone()).chain(t.ranked.iter().cloned()).collect();
+        let mut seen_langs: Vec<Lang> = Vec::new();
+        let mut broken: Vec<Choice> = Vec::new();
+        for c in all.iter().filter(|c| c.form.len() == 1) {
+            let lang = c.start();
+            if seen_langs.contains(&lang) {
+                continue;
             }
-            let ch = self.choice(c);
-            if !out.iter().chain(lang_choices.iter()).any(|o| o.text() == ch.text()) {
-                lang_choices.push(ch);
-            }
-        }
-        let (good, broken): (Vec<Choice>, Vec<Choice>) = lang_choices.into_iter().partition(|c| !has_broken_hangul(&c.cand));
-        // 한 언어 후보 → 한자 → 여러 언어가 섞인 후보 → 깨진 한글 후보
-        let (single, mixed): (Vec<Choice>, Vec<Choice>) = good.into_iter().partition(|c| c.cand.form.len() == 1);
-        out.extend(single);
-        // 한국어 한 단어면 한자 후보
-        if let [(Lang::Ko, _)] = t.chosen.form.as_slice() {
-            let reading = t.chosen.segments[0].text.clone();
-            let room = MAX_CANDIDATES.saturating_sub(out.len() + 1);
-            for h in crate::hanja::candidates(&reading, room) {
-                if !out.iter().any(|o| o.text() == h) {
-                    out.push(Choice { cand: t.chosen.clone(), texts: vec![h], mozc_pick: None, label: HANJA.into() });
+            seen_langs.push(lang);
+            match lang {
+                Lang::Ja => {
+                    let keys = c.segments[0].keys.clone();
+                    let p = parse(&keys);
+                    let mut any = false;
+                    if p.leftover == 0 {
+                        if let Some(conv) = self.mozc.conversion_ctx(&p.kana, &keys, false) {
+                            let rest: String = conv.segments.iter().skip(1).cloned().collect();
+                            for (id, v) in conv.candidates.iter().take(7) {
+                                any = true;
+                                let ch = Choice { cand: c.clone(), texts: vec![format!("{v}{rest}")], mozc_pick: Some(*id), label: "ja".into(), group: "ja".into() };
+                                add(&mut out, ch);
+                            }
+                        }
+                    }
+                    if !any {
+                        let ch = self.choice(c);
+                        add(&mut out, ch);
+                    }
+                }
+                Lang::Ko => {
+                    let ch = self.choice(c);
+                    if has_broken_hangul(c) {
+                        broken.push(ch);
+                        continue;
+                    }
+                    add(&mut out, ch);
+                    for h in crate::hanja::candidates(&c.segments[0].text, 6) {
+                        let ch = Choice { cand: c.clone(), texts: vec![h], mozc_pick: None, label: HANJA.into(), group: "ko".into() };
+                        add(&mut out, ch);
+                    }
+                }
+                Lang::En => {
+                    let ch = self.choice(c);
+                    let fw = fullwidth(&c.segments[0].keys);
+                    add(&mut out, ch.clone());
+                    add(&mut out, Choice { texts: vec![fw], label: FULLWIDTH.into(), ..ch });
                 }
             }
         }
-        out.extend(mixed);
-        out.extend(broken);
-        out.truncate(MAX_CANDIDATES - 1);
-        // 영어 토큰에는 전각 후보 (항상 자리를 남겨 둔다)
-        if let Some(en) = out.iter().find(|c| c.cand.form.len() == 1 && c.cand.start() == Lang::En).cloned() {
-            let fw = fullwidth(&en.cand.segments[0].keys);
-            if !out.iter().any(|o| o.text() == fw) {
-                out.push(Choice { texts: vec![fw], label: FULLWIDTH.into(), ..en });
+        // 여러 언어가 섞인 후보 (깨진 한글이 섞인 것은 맨 뒤)
+        let mut mixed = 0;
+        for c in all.iter().filter(|c| c.form.len() > 1) {
+            if mixed >= 3 {
+                break;
             }
+            let ch = self.choice(c);
+            if has_broken_hangul(c) {
+                broken.push(ch);
+            } else {
+                mixed += 1;
+                add(&mut out, ch);
+            }
+        }
+        for ch in broken.into_iter().take(2) {
+            add(&mut out, Choice { group: "mix".into(), ..ch });
         }
         out
     }
@@ -726,6 +899,11 @@ impl<'m> Session<'m> {
         if let Some(c) = &self.pinned {
             return Some((c.clone(), false, false));
         }
+        if !self.sym.is_empty() {
+            let sym = self.sym.clone();
+            let (t, l) = symbol_variants(&sym, self.prev == Some(Lang::Ja)).into_iter().next()?;
+            return Some((symbol_choice(&sym, t, l), false, false));
+        }
         let dec = self.det.decide(&self.keys, self.prev);
         let t = dec.tokens.first()?.clone();
         let ambiguous = t.margin() < self.det.params().ambiguous;
@@ -734,7 +912,7 @@ impl<'m> Session<'m> {
 
     fn respond(&mut self) -> Response {
         let mut r = Response { eaten: true, ..Default::default() };
-        if self.keys.is_empty() {
+        if !self.composing() {
             return r;
         }
         if self.raw {
@@ -768,7 +946,16 @@ impl<'m> Session<'m> {
     fn commit(&mut self, tail: &str) -> Response {
         let mut text;
         let mut segs: Vec<PreeditSegment> = Vec::new();
-        if self.raw {
+        if !self.sym.is_empty() {
+            // 기호 조합: 언어 문맥·학습은 바꾸지 않는다
+            let c = self.current().map(|x| x.0);
+            text = c.as_ref().map(|c| c.text()).unwrap_or_else(|| self.sym.clone());
+            let lang = match c.as_ref().map(|c| c.label.as_str()) {
+                Some("ja") | Some(FULLWIDTH) => "ja",
+                _ => "other",
+            };
+            segs.push(seg(&text, lang));
+        } else if self.raw {
             text = self.keys.clone();
             segs.push(seg(&text, "raw"));
         } else if let Some((c, _, _)) = self.current() {
@@ -908,11 +1095,15 @@ mod tests {
         assert_eq!(s.key(&key(VK_SPACE, false)).commit.as_deref(), Some("わたしは")); // 일본어는 공백 없이
         // 장음: 글자 뒤 '-'는 단어 안의 ー
         assert_eq!(type_keys(&mut s, "ko-hi-").preedit_text(), "こーひー");
-        // 일본어 문맥의 마침표는 。 (조합을 확정하고 붙인다)
+        // 일본어 문맥의 마침표: 단어를 확정하고 기호 조합 。을 시작한다
         assert!(s.test(&key(0xBE, false)).eaten);
-        assert_eq!(s.key(&key(0xBE, false)).commit.as_deref(), Some("こーひー。"));
-        // 확정 직후에도 일본어 문맥이면 、
-        assert_eq!(s.key(&key(0xBC, false)).commit.as_deref(), Some("、"));
+        let r = s.key(&key(0xBE, false));
+        assert_eq!(r.commit.as_deref(), Some("こーひー"));
+        assert_eq!(r.preedit_text(), "。");
+        // 다음 기호는 이어 붙는다 (、는 따로 확정되지 않고 조합 안에서 。、)
+        assert_eq!(s.key(&key(0xBC, false)).preedit_text(), "。、");
+        // Space: 일본어 문맥이면 공백 없이 확정
+        assert_eq!(s.key(&key(VK_SPACE, false)).commit.as_deref(), Some("。、"));
     }
 
     #[test]
@@ -926,8 +1117,11 @@ mod tests {
         assert!(s.key(&key(VK_ESCAPE, false)).preedit.is_empty());
         type_keys(&mut s, "gks");
         assert_eq!(s.key(&key(VK_BACK, false)).preedit_text(), "하");
-        assert!(s.test(&key(0xBE, false)).flush_first); // 한국어 문맥의 마침표: 먼저 확정
-        assert_eq!(s.flush().commit.as_deref(), Some("하"));
+        // 한국어 문맥의 마침표: 단어를 확정하고 기호 조합 '.'
+        let r = s.key(&key(0xBE, false));
+        assert_eq!(r.commit.as_deref(), Some("하"));
+        assert_eq!(r.preedit_text(), ".");
+        assert_eq!(s.flush().commit.as_deref(), Some("."));
         assert!(!s.test(&key(VK_SPACE, false)).eaten);
     }
 
@@ -939,10 +1133,12 @@ mod tests {
         let r = s.shift_tap();
         let list = r.candidates.clone().expect("candidate window");
         assert!(list.items.len() >= 2);
-        assert_eq!(list.selected, 1);
-        assert_eq!(r.preedit_text(), list.items[1]);
+        // 처음 선택은 다음 언어 묶음의 첫 후보 (go → 해)
+        let sel = list.selected;
+        assert!(sel >= 1 && sel < 5, "{:?}", list.items);
+        assert_eq!(r.preedit_text(), list.items[sel]);
         assert!(r.preedit[0].focused);
-        let second = list.items[1].clone();
+        let second = list.items[sel].clone();
         assert_ne!(first, second);
         // Backspace: 후보창 닫고 친 키 그대로(로마자)
         let r = s.key(&key(VK_BACK, false));
@@ -951,9 +1147,9 @@ mod tests {
         assert!(r.candidates.is_none());
         s.reset();
         assert_eq!(type_keys(&mut s, "go").preedit_text(), first);
-        // 다시 열고 숫자 2로 고른 뒤 Space로 확정
+        // 다시 열고 숫자로 고른 뒤 Space로 확정
         s.shift_tap();
-        assert_eq!(s.key(&key(0x32, false)).preedit_text(), second);
+        assert_eq!(s.key(&key(0x31 + sel as u16, false)).preedit_text(), second);
         let committed = s.key(&key(VK_SPACE, false)).commit.unwrap_or_default();
         assert!(committed.starts_with(&second));
         // 학습: 같은 키를 다시 치면 고른 후보가 1위
@@ -986,11 +1182,78 @@ mod tests {
         // 후보창이 없을 때 방향키는 먼저 확정하고 앱에 넘긴다
         assert!(s.test(&key(VK_DOWN, false)).flush_first);
         let list = s.shift_tap().candidates.expect("window");
+        let n = list.items.len();
+        let sel = list.selected;
         assert!(s.test(&key(VK_DOWN, false)).eaten);
-        assert_eq!(s.key(&key(VK_DOWN, false)).candidates.unwrap().selected, 2 % list.items.len());
-        assert_eq!(s.key(&key(VK_UP, false)).candidates.unwrap().selected, 1);
-        assert_eq!(s.key(&key(VK_LEFT, false)).candidates.unwrap().selected, 0);
-        assert_eq!(s.key(&key(VK_UP, false)).candidates.unwrap().selected, list.items.len() - 1);
+        assert_eq!(s.key(&key(VK_DOWN, false)).candidates.unwrap().selected, (sel + 1) % n);
+        assert_eq!(s.key(&key(VK_UP, false)).candidates.unwrap().selected, sel);
+        for _ in 0..sel {
+            s.key(&key(VK_LEFT, false));
+        }
+        assert_eq!(s.key(&key(VK_UP, false)).candidates.unwrap().selected, n - 1);
+    }
+
+    #[test]
+    fn all_languages_and_tab_groups() {
+        let Some(m) = models() else { return };
+        crate::hanja::load_for_test(&[("해", &["海", "害"])]);
+        let mut s = session(&m);
+        // go: 문맥과 상관없이 영어(go, ｇｏ), 한국어(해 + 한자), 일본어(ご, Mozc 없으면 가나) 묶음이 모두 나온다
+        type_keys(&mut s, "go");
+        let list = s.shift_tap().candidates.unwrap();
+        for want in ["go", "ｇｏ", "해", "海", "ご"] {
+            assert!(list.items.iter().any(|t| t == want), "{want} missing: {:?}", list.items);
+        }
+        // 묶음 시작 위치들
+        let lang_of = |t: &str| match t {
+            "go" | "ｇｏ" => "en",
+            "해" | "海" | "害" => "ko",
+            "ご" => "ja",
+            _ => "mix",
+        };
+        let starts: Vec<usize> =
+            (0..list.items.len()).filter(|&i| i == 0 || lang_of(&list.items[i]) != lang_of(&list.items[i - 1])).collect();
+        // 처음 선택은 두 번째 묶음의 첫 후보 (일본어가 1위면 다음 변환 후보)
+        assert!(list.selected == starts[1] || (lang_of(&list.items[0]) == "ja" && list.selected == 1), "{:?} sel {}", list.items, list.selected);
+        // Tab: 다음 묶음의 첫 후보, Shift+Tab: 이전 묶음
+        let cur = starts.iter().rposition(|&x| x <= list.selected).unwrap();
+        let t = s.key(&key(VK_TAB, false)).candidates.unwrap();
+        assert_eq!(t.selected, starts[(cur + 1) % starts.len()], "{:?}", t.items);
+        let b = s.key(&key(VK_TAB, true)).candidates.unwrap();
+        assert_eq!(b.selected, starts[cur]);
+    }
+
+    #[test]
+    fn symbol_composition_and_variants() {
+        let Some(m) = models() else { return };
+        let mut s = session(&m);
+        // 기호는 조합으로 들어가고, Shift 탭으로 변형 후보
+        assert!(s.test(&key(0xBF, true)).eaten); // ?
+        assert_eq!(s.key(&key(0xBF, true)).preedit_text(), "?");
+        let list = s.shift_tap().candidates.unwrap();
+        assert!(list.items.iter().any(|t| t == "？"), "{:?}", list.items);
+        assert!(list.items.iter().any(|t| t == "⁉"), "{:?}", list.items);
+        // 글자를 치면 기호를 확정하고 글자 조합 시작
+        let r = s.key(&key(b'D' as u16, false));
+        assert!(r.commit.is_some());
+        s.reset();
+        // -> 는 화살표 후보
+        s.key(&key(0xBD, false));
+        assert_eq!(s.key(&key(0xBE, true)).preedit_text(), "->");
+        let list = s.shift_tap().candidates.unwrap();
+        assert!(list.items.iter().any(|t| t == "→"), "{:?}", list.items);
+        s.reset();
+        // 숫자: 전각·원 숫자
+        s.key(&key(0x33, false));
+        let list = s.shift_tap().candidates.unwrap();
+        for want in ["3", "３", "③", "三"] {
+            assert!(list.items.iter().any(|t| t == want), "{want}: {:?}", list.items);
+        }
+        // 기호 조합 중 Backspace는 한 글자씩
+        s.reset();
+        s.key(&key(0x31, true));
+        s.key(&key(0x31, true));
+        assert_eq!(s.key(&key(VK_BACK, false)).preedit_text(), "!");
     }
 
     #[test]

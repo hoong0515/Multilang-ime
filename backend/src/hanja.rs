@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
-static DICT: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
+static DICT: Mutex<Option<HashMap<String, Vec<String>>>> = Mutex::new(None);
 static LEARN: Mutex<Option<(PathBuf, HashMap<String, HashMap<String, u32>>)>> = Mutex::new(None);
 
 fn is_syllable(c: char) -> bool {
@@ -37,7 +37,9 @@ pub fn load(dict: &Path, learn: PathBuf) {
             }
         }
         crate::log(&format!("hanja: {} readings", map.len()));
-        let _ = DICT.set(map);
+        if let Ok(mut d) = DICT.lock() {
+            *d = Some(map);
+        }
     } else {
         crate::log("hanja: dictionary not found");
     }
@@ -49,8 +51,9 @@ pub fn load(dict: &Path, learn: PathBuf) {
 
 /// 읽기의 한자 후보 (학습한 것 먼저). 사전이 아직 없으면 빈 목록.
 pub fn candidates(reading: &str, max: usize) -> Vec<String> {
-    let Some(list) = DICT.get().and_then(|d| d.get(reading)) else { return Vec::new() };
-    let mut out: Vec<String> = list.clone();
+    let Some(mut out) = DICT.lock().ok().and_then(|d| d.as_ref().and_then(|d| d.get(reading).cloned())) else {
+        return Vec::new();
+    };
     if let Ok(l) = LEARN.lock() {
         if let Some(counts) = l.as_ref().and_then(|(_, m)| m.get(reading)) {
             // 안정 정렬: 학습 횟수 많은 순, 같으면 사전 순서
@@ -75,12 +78,16 @@ pub fn learn(reading: &str, hanja: &str) {
 
 #[cfg(test)]
 pub fn load_for_test(entries: &[(&str, &[&str])]) {
-    let mut map = HashMap::new();
-    for (r, hs) in entries {
-        map.insert(r.to_string(), hs.iter().map(|s| s.to_string()).collect());
+    // 테스트끼리 병렬로 돌므로 덮어쓰지 않고 더한다
+    if let Ok(mut d) = DICT.lock() {
+        let map = d.get_or_insert_with(HashMap::new);
+        for (r, hs) in entries {
+            map.insert(r.to_string(), hs.iter().map(|s| s.to_string()).collect());
+        }
     }
-    let _ = DICT.set(map);
     if let Ok(mut l) = LEARN.lock() {
-        *l = Some((std::env::temp_dir().join("multilang-ime-test-hanja.json"), HashMap::new()));
+        if l.is_none() {
+            *l = Some((std::env::temp_dir().join("multilang-ime-test-hanja.json"), HashMap::new()));
+        }
     }
 }
