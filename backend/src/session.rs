@@ -109,6 +109,35 @@ fn mozc_lost(server: &std::path::Path) {
     start_mozc(server);
 }
 
+const NOUN_KEYS: &str = "kore";
+const NOUN_KANA: &str = "これ";
+
+/// 변환 결과 첫 문절에서 자리표시 これ를 떼어 낸다. 첫 문절이 これ로 시작하지 않으면 None.
+fn strip_noun(c: &mozc::Conversion) -> Option<mozc::Conversion> {
+    let first = c.segments.first()?;
+    if !first.starts_with(NOUN_KANA) || !c.readings.first()?.starts_with(NOUN_KANA) {
+        return None;
+    }
+    let mut out = c.clone();
+    let rest = first[NOUN_KANA.len()..].to_string();
+    let rest_reading = c.readings[0][NOUN_KANA.len()..].to_string();
+    if rest.is_empty() {
+        // これ가 따로 한 문절: 그 문절과 그 후보를 버린다
+        out.segments.remove(0);
+        out.readings.remove(0);
+        out.candidates.clear();
+    } else {
+        out.segments[0] = rest;
+        out.readings[0] = rest_reading;
+        out.candidates = c
+            .candidates
+            .iter()
+            .filter_map(|(id, v)| v.strip_prefix(NOUN_KANA).filter(|r| !r.is_empty()).map(|r| (*id, r.to_string())))
+            .collect();
+    }
+    Some(out)
+}
+
 /// Mozc 서버와의 연결 (없거나 실패하면 가나로 대신 보인다).
 ///
 /// 지연: 가나를 통째로 넣는 UPDATE_COMPOSITION은 약 14 ms라, Mozc 조합을 우리 로마자 키와 맞춰 두고
@@ -228,6 +257,27 @@ impl MozcBridge {
                 None
             }
         }
+    }
+
+    /// 영단어 뒤의 일본어 구간(조사로 시작)은 앞에 자리표시 명사 これ를 붙여 변환하고 떼어 낸다.
+    /// (Mozc가 조사로 시작하는 문자열을 혼자 변환하면 に→二 같은 오변환이 난다: Youtube|二動画を上げた)
+    pub fn conversion_ctx(&mut self, kana: &str, keys: &str, after_noun: bool) -> Option<mozc::Conversion> {
+        if after_noun {
+            if let Some(c) = self.conversion(&format!("{NOUN_KANA}{kana}"), &format!("{NOUN_KEYS}{keys}")) {
+                if let Some(c) = strip_noun(&c) {
+                    return Some(c);
+                }
+            }
+        }
+        self.conversion(kana, keys)
+    }
+
+    pub fn commit_ctx(&mut self, kana: &str, keys: &str, pick: Option<i32>, after_noun: bool) -> Option<String> {
+        if after_noun {
+            let t = self.commit(&format!("{NOUN_KANA}{kana}"), &format!("{NOUN_KEYS}{keys}"), pick)?;
+            return t.strip_prefix(NOUN_KANA).map(str::to_string);
+        }
+        self.commit(kana, keys, pick)
     }
 
     /// Mozc로 확정한다 (학습). pick은 첫 문절 후보 id.
@@ -576,11 +626,13 @@ impl<'m> Session<'m> {
     fn display_texts(&mut self, c: &Candidate) -> Vec<String> {
         c.segments
             .iter()
-            .map(|s| {
+            .enumerate()
+            .map(|(i, s)| {
                 if s.lang == Some(Lang::Ja) {
                     let p = parse(&s.keys);
+                    let after_noun = i > 0 && c.segments[i - 1].lang == Some(Lang::En);
                     if p.leftover == 0 {
-                        if let Some(conv) = self.mozc.conversion(&p.kana, &s.keys) {
+                        if let Some(conv) = self.mozc.conversion_ctx(&p.kana, &s.keys, after_noun) {
                             return conv.text();
                         }
                     }
@@ -602,16 +654,26 @@ impl<'m> Session<'m> {
         let Some(t) = dec.tokens.first().cloned() else { return Vec::new() };
         let mut out: Vec<Choice> = Vec::new();
 
-        // 일본어 한 구간이면 Mozc 후보를 먼저 (첫 문절 후보 + 나머지 문절)
-        if t.chosen.form.len() == 1 && t.chosen.start() == Lang::Ja {
-            let p = parse(&t.chosen.segments[0].keys);
+        // 일본어 한 구간(또는 영단어 + 일본어)이면 Mozc 후보를 먼저 (첫 문절 후보 + 나머지 문절)
+        let segs = &t.chosen.segments;
+        let ja_form = match t.chosen.form.as_slice() {
+            [(Lang::Ja, _)] => Some(false),
+            [(Lang::En, _), (Lang::Ja, _)] => Some(true),
+            _ => None,
+        };
+        if let Some(after_noun) = ja_form {
+            let ja = &segs[segs.len() - 1];
+            let p = parse(&ja.keys);
             if p.leftover == 0 {
-                if let Some(conv) = self.mozc.conversion(&p.kana, &t.chosen.segments[0].keys) {
+                if let Some(conv) = self.mozc.conversion_ctx(&p.kana, &ja.keys, after_noun) {
                     let rest: String = conv.segments.iter().skip(1).cloned().collect();
+                    let label = if after_noun { "en+ja" } else { "ja" };
                     for (id, v) in conv.candidates.iter().take(MAX_CANDIDATES - 2) {
-                        let text = format!("{v}{rest}");
-                        if !out.iter().any(|o| o.text() == text) {
-                            out.push(Choice { cand: t.chosen.clone(), texts: vec![text], mozc_pick: Some(*id), label: "ja".into() });
+                        let mut texts = if after_noun { vec![segs[0].text.clone()] } else { Vec::new() };
+                        texts.push(format!("{v}{rest}"));
+                        let ch = Choice { cand: t.chosen.clone(), texts, mozc_pick: Some(*id), label: label.into() };
+                        if !out.iter().any(|o| o.text() == ch.text()) {
+                            out.push(ch);
                         }
                     }
                 }
@@ -698,10 +760,12 @@ impl<'m> Session<'m> {
         } else if let Some((c, _, _)) = self.current() {
             // 일본어 구간은 Mozc로 확정 (학습). 전각 후보는 그대로.
             text = String::new();
-            for (s, shown) in c.cand.segments.iter().zip(c.texts.iter()) {
+            for (i, (s, shown)) in c.cand.segments.iter().zip(c.texts.iter()).enumerate() {
                 if s.lang == Some(Lang::Ja) && c.label != FULLWIDTH {
                     let p = parse(&s.keys);
-                    let committed = if p.leftover == 0 { self.mozc.commit(&p.kana, &s.keys, c.mozc_pick) } else { None };
+                    let after_noun = i > 0 && c.cand.segments[i - 1].lang == Some(Lang::En);
+                    let committed =
+                        if p.leftover == 0 { self.mozc.commit_ctx(&p.kana, &s.keys, c.mozc_pick, after_noun) } else { None };
                     let t = committed.as_deref().unwrap_or(shown);
                     text.push_str(t);
                     segs.push(seg(t, "ja"));
@@ -765,6 +829,20 @@ mod tests {
             };
         }
         r
+    }
+
+    #[test]
+    fn strip_placeholder_noun() {
+        let c = mozc::Conversion {
+            segments: vec!["これに".into(), "動画を".into(), "上げた".into()],
+            readings: vec!["これに".into(), "どうがを".into(), "あげた".into()],
+            candidates: vec![(0, "これに".into()), (1, "此れに".into()), (2, "これ荷".into())],
+        };
+        let s = strip_noun(&c).unwrap();
+        assert_eq!(s.text(), "に動画を上げた");
+        assert_eq!(s.candidates, vec![(0, "に".to_string()), (2, "荷".to_string())]);
+        let c2 = mozc::Conversion { segments: vec!["此れに".into()], readings: vec!["これに".into()], candidates: vec![] };
+        assert!(strip_noun(&c2).is_none());
     }
 
     #[test]
