@@ -286,6 +286,17 @@ python poc/mozc/run_poc.py
 - 조합이 없을 때 Space는 문맥과 상관없이 보통 공백(앱에 넘김). 전각 공백은 언제나 Shift+Space.
 - 한국어·영어 문맥의 Space는 그대로 확정 + 공백.
 
+## 옛 Win32 입력칸: 조합 창 (2026-11-23)
+
+- 문제: 옛 Win32 입력칸(문자표의 Edit, WinForms TextBox 등, Windows 호환 계층 CUAS 경유)에서 키마다 조합이 끊겨 백엔드가 매번 처음부터 시작했다 (d → k → s 한 글자씩 그대로 입력).
+- 조사 (디버그 로그):
+  - 조합은 키 처리가 끝난 직후 앱(CUAS) 쪽에서 끝난다 (OnCompositionTerminated). 우리 편집 단계(밑줄·언어 속성·위치 조회)와는 무관.
+  - IME 켜짐 표시(KEYBOARD_OPENCLOSE)·입력 모드를 켜도 그대로 (이 설정은 남겨 둠).
+  - 조합 전체를 interim(조합 중 글자) 선택으로 두면 **한 글자일 때만** 유지되고, 두 글자부터는 선택이 거부(E_INVALIDARG)되며 끊긴다 → 한국어 프로필의 CUAS는 조합 글자를 한 글자만 허용한다.
+- 해결: CUAS 문맥(TS_SS_TRANSITORY)에서는 조합을 입력칸에 넣지 않고 커서 아래 **조합 창**(후보창 맨 윗줄)에 보이고, 확정할 때만 입력칸에 넣는다. 부분 변환 중이면 고치는 부분을 `[ ]`로 표시. 다른 입력칸으로 옮기면 남은 조합은 버린다. TSF 앱(메모장 등)은 지금처럼 입력칸 안 조합.
+- 함께 고친 것: 옛 입력칸에서는 Shift에 대해 OnKeyDown 없이 OnTestKeyDown만 불려 Shift 탭이 인식되지 않았다 → OnTestKeyDown에서도 누른 시각을 기록.
+- 실측 (문자표): `dkssud` → 조합 창 `안녕`, Space로 `안녕 ` 확정, `hello`, `go` + Shift 탭 → 후보(go, ｇｏ, 해, 海…, ご) + Tab → 五, `kyouhaiitenki` + Shift 탭 + → → `今日は[いい天気]`. 메모장은 그대로 입력칸 안 조합.
+
 ## 알려진 한계
 
 - 한국어 모델은 wordfreq의 형태소 단위 목록이라 어절 패턴이 약하다.
