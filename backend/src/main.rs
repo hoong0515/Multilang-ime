@@ -31,6 +31,9 @@ use windows::Win32::System::Pipes::{
 use windows::Win32::System::Threading::CreateMutexW;
 
 pub(crate) fn log(msg: &str) {
+    if cfg!(test) {
+        return;
+    }
     let dir = std::env::var("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
     let dir = dir.join("multilang-ime");
     let _ = std::fs::create_dir_all(&dir);

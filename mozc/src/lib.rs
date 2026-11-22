@@ -301,6 +301,34 @@ impl Session {
         Ok(conversion(&out))
     }
 
+    /// 로마자 키를 하나씩 조합에 보낸다 (키당 약 1 ms). 마지막 응답의 조합 문자열을 돌려준다.
+    pub fn type_keys(&mut self, keys: &str) -> Result<String> {
+        let mut last = None;
+        for c in keys.chars() {
+            let k = KeyEvent { key_code: Some(c.to_ascii_lowercase() as u32), ..Default::default() };
+            last = Some(self.send_key(k)?);
+        }
+        Ok(last.and_then(|o| o.preedit).map(|p| p.segment.iter().map(|s| s.value.clone()).collect()).unwrap_or_default())
+    }
+
+    /// 변환을 취소하고 조합 상태로 돌아간다 (Esc).
+    pub fn cancel_conversion(&mut self) -> Result<()> {
+        let k = KeyEvent { special_key: Some(key_event::SpecialKey::Escape as i32), ..Default::default() };
+        self.send_key(k).map(|_| ())
+    }
+
+    /// 지금 조합을 변환한다 (Space).
+    pub fn convert_current(&mut self) -> Result<Conversion> {
+        let k = KeyEvent { special_key: Some(key_event::SpecialKey::Space as i32), ..Default::default() };
+        Ok(conversion(&self.send_key(k)?))
+    }
+
+    /// 아무것도 하지 않는 호출 (연결 비용 측정).
+    pub fn noop(&mut self) -> Result<()> {
+        let i = Input { r#type: input::CommandType::NoOperation as i32, ..Default::default() };
+        self.client.call(&i).map(|_| ())
+    }
+
     /// 첫 문절의 후보를 id로 고른다.
     pub fn select(&mut self, id: i32) -> Result<Conversion> {
         let out = self.command(SessionCommand {

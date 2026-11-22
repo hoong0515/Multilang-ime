@@ -43,75 +43,133 @@ const VK_OEM_MINUS: u16 = 0xBD;
 // ---------------------------------------------------------------- Mozc 연결
 
 /// Mozc 서버와의 연결 (없거나 실패하면 가나로 대신 보인다).
+///
+/// 지연: 가나를 통째로 넣는 UPDATE_COMPOSITION은 약 14 ms라, Mozc 조합을 우리 로마자 키와 맞춰 두고
+/// 새로 친 키만 보낸다 (키 0.5 ms + 변환 0.5 ms + 변환 취소 0.5 ms). 앞부분이 달라지면 지우고 다시 보낸다.
 pub struct MozcBridge {
     server: Option<PathBuf>,
     session: Option<mozc::Session>,
     failed_at: Option<Instant>,
     cache: HashMap<String, mozc::Conversion>,
+    /// 지금 Mozc 조합에 들어 있는 로마자 키. None이면 조합 상태를 모른다 (다음에 지우고 다시 보낸다).
+    typed: Option<String>,
+}
+
+/// Mozc의 조합 문자열과 우리 가나가 같은가. Mozc는 끝의 n을 전각 'ｎ'으로 두었다가 변환할 때 ん으로 바꾼다.
+fn same_kana(mozc: &str, ours: &str) -> bool {
+    if mozc == ours {
+        return true;
+    }
+    match (mozc.strip_suffix(['ｎ', 'n']), ours.strip_suffix('ん')) {
+        (Some(m), Some(o)) => m == o,
+        _ => false,
+    }
 }
 
 impl MozcBridge {
     pub fn new(server: Option<PathBuf>) -> Self {
-        Self { server, session: None, failed_at: None, cache: HashMap::new() }
+        Self { server, session: None, failed_at: None, cache: HashMap::new(), typed: None }
     }
 
-    fn ensure(&mut self) -> Option<&mut mozc::Session> {
+    fn ensure(&mut self) -> bool {
         if self.session.is_none() {
             let Some(server) = self.server.clone() else {
                 if self.failed_at.is_none() {
                     crate::log("mozc: no server bundled (kana only)");
                     self.failed_at = Some(Instant::now());
                 }
-                return None;
+                return false;
             };
             if self.failed_at.is_some_and(|t| t.elapsed() < MOZC_RETRY) {
-                return None;
+                return false;
             }
             match mozc::Client::connect_or_launch(&server).and_then(mozc::Session::new) {
                 Ok(s) => {
                     crate::log("mozc: connected");
-                    self.session = Some(s)
+                    self.session = Some(s);
+                    self.typed = None;
                 }
                 Err(e) => {
                     crate::log(&format!("mozc: connect failed: {e:?}"));
                     self.failed_at = Some(Instant::now());
-                    return None;
+                    return false;
                 }
             }
         }
-        self.session.as_mut()
+        true
     }
 
-    fn drop_session(&mut self) {
+    fn drop_session(&mut self, why: &str, e: mozc::Error) {
+        crate::log(&format!("mozc: {why} failed: {e:?}"));
         self.session = None;
+        self.typed = None;
         self.failed_at = Some(Instant::now());
     }
 
-    /// 가나의 변환 결과 (캐시).
-    pub fn conversion(&mut self, kana: &str) -> Option<mozc::Conversion> {
+    /// Mozc 조합을 keys(가나 kana)로 맞춘다.
+    fn sync(s: &mut mozc::Session, typed: &mut Option<String>, kana: &str, keys: &str) -> mozc::Result<()> {
+        let keys = keys.to_lowercase();
+        let rest = match typed.as_deref() {
+            Some(t) if keys.starts_with(t) => keys[t.len()..].to_string(),
+            _ => {
+                s.revert()?;
+                keys.clone()
+            }
+        };
+        *typed = None;
+        if !rest.is_empty() {
+            let comp = s.type_keys(&rest)?;
+            if !same_kana(&comp, kana) {
+                // 로마자 해석이 다르면 가나를 통째로 넣는다 (느린 길)
+                crate::log(&format!("mozc: slow path, mozc {comp:?} vs ours {kana:?} (keys {keys:?})"));
+                s.revert()?;
+                s.set_composition(kana)?;
+                return Ok(()); // typed = None: 다음에 다시 맞춘다
+            }
+        }
+        *typed = Some(keys);
+        Ok(())
+    }
+
+    /// 가나의 변환 결과 (캐시). keys는 그 가나를 만든 로마자.
+    pub fn conversion(&mut self, kana: &str, keys: &str) -> Option<mozc::Conversion> {
         if let Some(c) = self.cache.get(kana) {
             return Some(c.clone());
         }
-        let s = self.ensure()?;
-        match s.convert(kana) {
+        if !self.ensure() {
+            return None;
+        }
+        let s = self.session.as_mut()?;
+        let typed = &mut self.typed;
+        let r = (|| -> mozc::Result<mozc::Conversion> {
+            Self::sync(s, typed, kana, keys)?;
+            let c = s.convert_current()?;
+            s.cancel_conversion()?; // 조합 상태로 돌아가 다음 키를 이어 받는다
+            Ok(c)
+        })();
+        match r {
             Ok(c) => {
-                let _ = s.revert();
                 self.cache.insert(kana.to_string(), c.clone());
                 Some(c)
             }
             Err(e) => {
-                crate::log(&format!("mozc: convert failed: {e:?}"));
-                self.drop_session();
+                self.drop_session("convert", e);
                 None
             }
         }
     }
 
     /// Mozc로 확정한다 (학습). pick은 첫 문절 후보 id.
-    pub fn commit(&mut self, kana: &str, pick: Option<i32>) -> Option<String> {
-        let s = self.ensure()?;
+    pub fn commit(&mut self, kana: &str, keys: &str, pick: Option<i32>) -> Option<String> {
+        if !self.ensure() {
+            return None;
+        }
+        let s = self.session.as_mut()?;
+        let typed = &mut self.typed;
         let r = (|| -> mozc::Result<String> {
-            s.convert(kana)?;
+            Self::sync(s, typed, kana, keys)?;
+            *typed = Some(String::new()); // 확정하면 조합이 빈다
+            s.convert_current()?;
             if let Some(id) = pick {
                 s.select(id)?;
             }
@@ -121,8 +179,8 @@ impl MozcBridge {
         match r {
             Ok(t) if !t.is_empty() => Some(t),
             Ok(_) => None,
-            Err(_) => {
-                self.drop_session();
+            Err(e) => {
+                self.drop_session("commit", e);
                 None
             }
         }
@@ -155,6 +213,10 @@ fn has_broken_hangul(c: &Candidate) -> bool {
     c.segments.iter().any(|s| {
         s.lang == Some(Lang::Ko) && compose(&s.keys).orphan_list.iter().any(|j| !EXPRESSIVE_JAMO.contains(*j))
     })
+}
+
+fn seg(text: &str, lang: &str) -> PreeditSegment {
+    PreeditSegment { text: text.to_string(), lang: lang.to_string(), ambiguous: false, focused: false }
 }
 
 fn fullwidth(s: &str) -> String {
@@ -304,11 +366,14 @@ impl<'m> Session<'m> {
             let c = (k.vk as u8) as char;
             let ch = if k.shift ^ k.caps { c } else { c.to_ascii_lowercase() };
             // 후보창이 열린 채 글자를 치면 고른 후보로 확정하고 새 조합을 시작한다
-            let committed = if self.open.is_some() { self.commit("").commit } else { None };
+            let committed = if self.open.is_some() { Some(self.commit("")) } else { None };
             self.pinned = None;
             self.keys.push(ch);
             let mut r = self.respond();
-            r.commit = committed;
+            if let Some(c) = committed {
+                r.commit = c.commit;
+                r.commit_segments = c.commit_segments;
+            }
             return r;
         }
         if is_dash(k) && self.composing() && self.ja_context() {
@@ -320,9 +385,12 @@ impl<'m> Session<'m> {
         if let Some(c) = punct(k) {
             if let Some(jp) = ja_punct(c) {
                 if self.ja_context() {
-                    let mut text = if self.composing() { self.commit("").commit.unwrap_or_default() } else { String::new() };
+                    let mut r = if self.composing() { self.commit("") } else { Response { eaten: true, ..Default::default() } };
+                    let mut text = r.commit.take().unwrap_or_default();
                     text.push(jp);
-                    return Response { eaten: true, commit: Some(text), ..Default::default() };
+                    r.commit_segments.push(seg(&jp.to_string(), "ja"));
+                    r.commit = Some(text);
+                    return r;
                 }
             }
         }
@@ -421,7 +489,7 @@ impl<'m> Session<'m> {
                 if s.lang == Some(Lang::Ja) {
                     let p = parse(&s.keys);
                     if p.leftover == 0 {
-                        if let Some(conv) = self.mozc.conversion(&p.kana) {
+                        if let Some(conv) = self.mozc.conversion(&p.kana, &s.keys) {
                             return conv.text();
                         }
                     }
@@ -447,7 +515,7 @@ impl<'m> Session<'m> {
         if t.chosen.form.len() == 1 && t.chosen.start() == Lang::Ja {
             let p = parse(&t.chosen.segments[0].keys);
             if p.leftover == 0 {
-                if let Some(conv) = self.mozc.conversion(&p.kana) {
+                if let Some(conv) = self.mozc.conversion(&p.kana, &t.chosen.segments[0].keys) {
                     let rest: String = conv.segments.iter().skip(1).cloned().collect();
                     for (id, v) in conv.candidates.iter().take(MAX_CANDIDATES - 2) {
                         let text = format!("{v}{rest}");
@@ -532,18 +600,24 @@ impl<'m> Session<'m> {
 
     fn commit(&mut self, tail: &str) -> Response {
         let mut text;
+        let mut segs: Vec<PreeditSegment> = Vec::new();
         if self.raw {
             text = self.keys.clone();
+            segs.push(seg(&text, "raw"));
         } else if let Some((c, _, _)) = self.current() {
             // 일본어 구간은 Mozc로 확정 (학습). 전각 후보는 그대로.
             text = String::new();
             for (s, shown) in c.cand.segments.iter().zip(c.texts.iter()) {
                 if s.lang == Some(Lang::Ja) && c.label != FULLWIDTH {
                     let p = parse(&s.keys);
-                    let committed = if p.leftover == 0 { self.mozc.commit(&p.kana, c.mozc_pick) } else { None };
-                    text.push_str(committed.as_deref().unwrap_or(shown));
+                    let committed = if p.leftover == 0 { self.mozc.commit(&p.kana, &s.keys, c.mozc_pick) } else { None };
+                    let t = committed.as_deref().unwrap_or(shown);
+                    text.push_str(t);
+                    segs.push(seg(t, "ja"));
                 } else {
                     text.push_str(shown);
+                    let lang = if c.label == FULLWIDTH { "ja" } else { s.lang.map(|l| l.code()).unwrap_or("other") };
+                    segs.push(seg(shown, lang));
                 }
             }
             // 학습: 확정한 형태를 기록하고 저장한다
@@ -559,10 +633,14 @@ impl<'m> Session<'m> {
             self.det.set_language_run(self.run);
         } else {
             text = self.keys.clone();
+            segs.push(seg(&text, "raw"));
         }
         text.push_str(tail);
+        if !tail.is_empty() {
+            segs.push(seg(tail, "other"));
+        }
         self.clear();
-        Response { eaten: true, commit: Some(text), ..Default::default() }
+        Response { eaten: true, commit: Some(text), commit_segments: segs, ..Default::default() }
     }
 }
 
@@ -596,6 +674,13 @@ mod tests {
             };
         }
         r
+    }
+
+    #[test]
+    fn mozc_kana_compare() {
+        assert!(same_kana("こんぴゅー", "こんぴゅー"));
+        assert!(same_kana("こｎ", "こん"));
+        assert!(!same_kana("こｎ", "こな"));
     }
 
     #[test]

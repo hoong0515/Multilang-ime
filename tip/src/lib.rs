@@ -174,6 +174,7 @@ impl TextService_Impl {
             state: self.state.clone(),
             sink,
             commit: resp.commit.clone(),
+            commit_segments: resp.commit_segments.clone(),
             preedit: resp.preedit_text(),
             segments: resp.preedit.clone(),
             atoms,
@@ -373,6 +374,7 @@ struct EditSession {
     state: Rc<RefCell<State>>,
     sink: ITfCompositionSink,
     commit: Option<String>,
+    commit_segments: Vec<PreeditSegment>,
     preedit: String,
     segments: Vec<PreeditSegment>,
     atoms: Option<(u32, u32, u32)>,
@@ -466,6 +468,37 @@ impl EditSession {
         }
     }
 
+    /// 구간마다 언어 속성(GUID_PROP_LANGID)을 붙인다. 앱은 이걸 보고 글꼴을 고른다
+    /// (한국어 프로필의 TIP가 넣은 일본어를 한국어 글꼴로 그려 気·ー 등이 깨지는 문제).
+    fn mark_langs(&self, ec: u32, range: &ITfRange, segs: &[PreeditSegment]) {
+        let Ok(prop) = (unsafe { self.context.GetProperty(&GUID_PROP_LANGID) }) else { return };
+        let mut start = 0i32;
+        for seg in segs {
+            let len = seg.text.encode_utf16().count() as i32;
+            let end = start + len;
+            let langid = match seg.lang.as_str() {
+                "ja" => Some(0x0411),
+                "ko" => Some(0x0412),
+                "en" => Some(0x0409),
+                _ => None,
+            };
+            if let (Some(id), true) = (langid, len > 0) {
+                let mark = || -> Result<()> {
+                    let r = unsafe { range.Clone()? };
+                    unsafe { r.Collapse(ec, TF_ANCHOR_START)? };
+                    let mut moved = 0i32;
+                    unsafe { r.ShiftEnd(ec, end, &mut moved, std::ptr::null())? };
+                    unsafe { r.ShiftStart(ec, start, &mut moved, std::ptr::null())? };
+                    unsafe { prop.SetValue(ec, &r, &variant_i4(id)) }
+                };
+                if let Err(e) = mark() {
+                    debug_log(&format!("langid set failed: {e:?}"), WPARAM(0), LPARAM(0));
+                }
+            }
+            start = end;
+        }
+    }
+
     fn caret_to_end(&self, ec: u32, range: &ITfRange) -> Result<()> {
         let r = unsafe { range.Clone()? };
         unsafe { r.Collapse(ec, TF_ANCHOR_END)? };
@@ -487,12 +520,14 @@ impl ITfEditSession_Impl for EditSession_Impl {
                 Some(comp) => {
                     let range = unsafe { comp.GetRange()? };
                     unsafe { range.SetText(ec, 0, &utf16(text))? };
+                    self.mark_langs(ec, &range, &self.commit_segments);
                     self.caret_to_end(ec, &range)?;
                     self.end_composition(ec, &comp)?;
                 }
                 None if !text.is_empty() => {
                     let ins: ITfInsertAtSelection = self.context.cast()?;
                     let range = unsafe { ins.InsertTextAtSelection(ec, Default::default(), &utf16(text))? };
+                    self.mark_langs(ec, &range, &self.commit_segments);
                     self.caret_to_end(ec, &range)?;
                 }
                 None => {}
@@ -507,6 +542,7 @@ impl ITfEditSession_Impl for EditSession_Impl {
             let range = unsafe { comp.GetRange()? };
             unsafe { range.SetText(ec, 0, &utf16(&self.preedit))? };
             self.mark_segments(ec, &range);
+            self.mark_langs(ec, &range, &self.segments);
             self.caret_to_end(ec, &range)?;
             self.remember_anchor(ec, &range);
         } else if self.commit.is_none() {

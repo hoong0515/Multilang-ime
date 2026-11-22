@@ -65,6 +65,9 @@ pub struct Response {
     pub preedit: Vec<PreeditSegment>,
     /// 이번에 확정된 텍스트.
     pub commit: Option<String>,
+    /// 확정 텍스트의 언어별 구간 (TIP가 언어 속성을 붙여 앱이 맞는 글꼴을 쓰게 한다).
+    #[serde(default)]
+    pub commit_segments: Vec<PreeditSegment>,
     /// 후보창 (열려 있을 때만).
     #[serde(default)]
     pub candidates: Option<CandidateList>,
