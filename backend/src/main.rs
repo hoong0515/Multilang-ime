@@ -7,6 +7,7 @@
 
 mod hanja;
 mod session;
+mod settings;
 
 use std::ffi::c_void;
 use std::io::Write as _;
@@ -154,6 +155,7 @@ fn main() {
     if let Ok(h) = history.lock() {
         log(&format!("history entries: {}", h.len()));
     }
+    settings::init(data_dir().join("settings.json"));
     // 한자 사전은 시작할 때 백그라운드로 읽는다 (약 30만 항목)
     if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
         let learn = data_dir().join("hanja_learn.json");

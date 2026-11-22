@@ -569,6 +569,10 @@ pub struct Session<'m> {
     keys: String,                       // 아직 확정하지 않은 친 키 그대로
     sym: String,                        // 조합 중인 기호·숫자 (keys와 동시에 쓰지 않는다)
     parts: Option<Parts>,               // 부분 변환 중 (긴 입력을 나눠 부분마다 후보를 고른다)
+    /// 이어서 변환(continue) 중 Space를 친 위치 (keys 안의 글자 위치)
+    ja_breaks: Vec<usize>,
+    /// 시험용: 설정 파일 대신 쓸 일본어 Space 동작
+    ja_space_override: Option<crate::settings::JaSpace>,
     raw: bool,                          // 친 키 그대로 보기 중
     prev: Option<Lang>,                 // 직전에 확정한 언어 (문맥)
     run: usize,                         // 같은 언어로 이어서 확정한 단어 수 (언어 가중치)
@@ -589,6 +593,8 @@ impl<'m> Session<'m> {
             keys: String::new(),
             sym: String::new(),
             parts: None,
+            ja_space_override: None,
+            ja_breaks: Vec::new(),
             raw: false,
             prev: None,
             run: 0,
@@ -603,6 +609,30 @@ impl<'m> Session<'m> {
     fn composing(&self) -> bool {
         !self.keys.is_empty() || !self.sym.is_empty()
     }
+
+    /// 이어서 변환 중 마지막 Space 뒤의 키가 (2키 이상) 일본어가 아닌 것으로 판정되면,
+    /// 그 앞(일본어)을 확정하고 뒤만 조합으로 남긴다. 확정 응답을 돌려준다.
+    fn split_off_non_ja(&mut self) -> Option<Response> {
+        let &b = self.ja_breaks.last()?;
+        let suffix = self.keys.get(b..)?.to_string();
+        // 로마자로 가나가 되지 않는 글자가 2개 이상일 때만 (일본어 단어의 앞부분은 대개 가나로 풀린다: ga, gak)
+        if suffix.chars().count() < 2 || parse(&suffix).leftover < 2 {
+            return None;
+        }
+        let dec = self.det.decide(&suffix, Some(Lang::Ja));
+        if dec.tokens.first().is_none_or(|t| t.chosen.start() == Lang::Ja) {
+            return None;
+        }
+        self.keys.truncate(b);
+        let c = self.commit("");
+        self.keys = suffix;
+        Some(c)
+    }
+
+    fn ja_space(&self) -> crate::settings::JaSpace {
+        self.ja_space_override.unwrap_or_else(|| crate::settings::current().ja_space)
+    }
+
 
     /// 지금 일본어 문맥인가: 조합 중이면 표시 중인 후보의 마지막 구간, 아니면 직전에 확정한 언어.
     fn ja_context(&self) -> bool {
@@ -722,6 +752,8 @@ impl<'m> Session<'m> {
             let committed = if self.open.is_some() || self.parts.is_some() || !self.sym.is_empty() { Some(self.commit("")) } else { None };
             self.pinned = None;
             self.keys.push(ch);
+            // 이어서 변환 중: Space 뒤 새 단어가 일본어가 아니면 앞의 일본어를 먼저 확정하고 새 단어만 남긴다
+            let committed = committed.or_else(|| self.split_off_non_ja());
             let mut r = self.respond();
             if let Some(c) = committed {
                 r.commit = c.commit;
@@ -806,6 +838,9 @@ impl<'m> Session<'m> {
                 } else {
                     self.pinned = None;
                     self.keys.pop();
+                    while self.ja_breaks.last().is_some_and(|&b| b >= self.keys.len()) {
+                        self.ja_breaks.pop();
+                    }
                     if self.keys.is_empty() {
                         self.raw = false;
                     }
@@ -813,9 +848,19 @@ impl<'m> Session<'m> {
                 self.respond()
             }
             VK_SPACE => {
-                // 일본어로 끝나는 조합은 공백 없이 확정한다
-                let tail = if self.ja_context() { "" } else { " " };
-                self.commit(tail)
+                if self.ja_context() {
+                    // 이어서 변환 설정: 글자 조합 중이면 확정하지 않고 이어 간다 (문장을 한 번에 변환)
+                    let plain = self.open.is_none() && self.parts.is_none() && self.pinned.is_none() && self.sym.is_empty();
+                    if plain && !self.keys.is_empty() && self.ja_space() == crate::settings::JaSpace::Continue {
+                        if self.ja_breaks.last() != Some(&self.keys.len()) {
+                            self.ja_breaks.push(self.keys.len());
+                        }
+                        return self.respond();
+                    }
+                    // 기본: 확정 + 전각 공백
+                    return self.commit("\u{3000}");
+                }
+                self.commit(" ")
             }
             VK_RETURN => self.commit(""),
             VK_ESCAPE => {
@@ -880,6 +925,7 @@ impl<'m> Session<'m> {
 
     fn clear(&mut self) {
         self.keys.clear();
+        self.ja_breaks.clear();
         self.sym.clear();
         self.parts = None;
         self.raw = false;
@@ -1219,7 +1265,7 @@ impl<'m> Session<'m> {
         }
         text.push_str(tail);
         if !tail.is_empty() {
-            segs.push(seg(tail, "other"));
+            segs.push(seg(tail, if tail == "\u{3000}" { "ja" } else { "other" }));
         }
         self.clear();
         Response { eaten: true, commit: Some(text), commit_segments: segs, ..Default::default() }
@@ -1315,7 +1361,7 @@ mod tests {
         let Some(m) = models() else { return };
         let mut s = session(&m);
         assert_eq!(type_keys(&mut s, "watashiha").preedit_text(), "わたしは");
-        assert_eq!(s.key(&key(VK_SPACE, false)).commit.as_deref(), Some("わたしは")); // 일본어는 공백 없이
+        assert_eq!(s.key(&key(VK_SPACE, false)).commit.as_deref(), Some("わたしは\u{3000}")); // 일본어는 확정 + 전각 공백
         // 장음: 글자 뒤 '-'는 단어 안의 ー
         assert_eq!(type_keys(&mut s, "ko-hi-").preedit_text(), "こーひー");
         // 일본어 문맥의 마침표: 단어를 확정하고 기호 조합 。을 시작한다
@@ -1326,7 +1372,7 @@ mod tests {
         // 다음 기호는 이어 붙는다 (、는 따로 확정되지 않고 조합 안에서 。、)
         assert_eq!(s.key(&key(0xBC, false)).preedit_text(), "。、");
         // Space: 일본어 문맥이면 공백 없이 확정
-        assert_eq!(s.key(&key(VK_SPACE, false)).commit.as_deref(), Some("。、"));
+        assert_eq!(s.key(&key(VK_SPACE, false)).commit.as_deref(), Some("。、\u{3000}"));
     }
 
     #[test]
@@ -1492,6 +1538,41 @@ mod tests {
     }
 
     #[test]
+    fn ja_space_modes() {
+        let Some(m) = models() else { return };
+        // 기본(commit): 확정 + 전각 공백. 조합이 없을 때 Space는 문맥과 상관없이 앱에 넘긴다 (전각은 Shift+Space)
+        let mut s = session(&m);
+        s.ja_space_override = Some(crate::settings::JaSpace::Commit);
+        type_keys(&mut s, "watashiha");
+        assert_eq!(s.key(&key(VK_SPACE, false)).commit.as_deref(), Some("わたしは\u{3000}"));
+        assert!(!s.test(&key(VK_SPACE, false)).eaten);
+        // 한국어 문맥은 그대로 확정 + 공백
+        type_keys(&mut s, "dkssud");
+        assert_eq!(s.key(&key(VK_SPACE, false)).commit.as_deref(), Some("안녕 "));
+        assert!(!s.test(&key(VK_SPACE, false)).eaten);
+
+        // continue: 확정하지 않고 이어 간다 → 문장 한 번에, 마침표에서 확정
+        let mut s = session(&m);
+        s.ja_space_override = Some(crate::settings::JaSpace::Continue);
+        type_keys(&mut s, "watashiha");
+        let r = s.key(&key(VK_SPACE, false));
+        assert!(r.commit.is_none());
+        assert_eq!(r.preedit_text(), "わたしは");
+        let r = type_keys(&mut s, "gakuseidesu");
+        assert_eq!(r.preedit_text(), "わたしはがくせいです");
+        assert_eq!(s.key(&key(0xBE, false)).commit.as_deref(), Some("わたしはがくせいです"));
+        s.reset();
+        // 이어서 변환 중 한국어 단어가 오면 앞의 일본어를 확정하고 한국어만 조합
+        type_keys(&mut s, "watashiha");
+        s.key(&key(VK_SPACE, false));
+        let r = type_keys(&mut s, "dk");
+        assert_eq!(r.preedit_text(), "아");
+        let r = type_keys(&mut s, "ssud");
+        assert_eq!(r.preedit_text(), "안녕");
+        assert_eq!(s.key(&key(VK_SPACE, false)).commit.as_deref(), Some("안녕 "));
+    }
+
+    #[test]
     fn shift_space_is_fullwidth_space() {
         let Some(m) = models() else { return };
         let mut s = session(&m);
@@ -1501,7 +1582,7 @@ mod tests {
         // 조합 중이면 확정 + 전각 공백
         type_keys(&mut s, "watashiha");
         assert_eq!(s.key(&key(VK_SPACE, true)).commit.as_deref(), Some("わたしは\u{3000}"));
-        // 보통 Space는 그대로 (조합이 없으면 앱에 넘긴다)
+        // 조합이 없을 때 보통 Space는 문맥과 상관없이 앱에 넘긴다 (반각 공백)
         assert!(!s.test(&key(VK_SPACE, false)).eaten);
     }
 

@@ -272,6 +272,20 @@ python poc/mozc/run_poc.py
 - 처음에 `GetProperty`로 읽어 늘 실패했다. 입력칸 용도는 앱 속성이라 `GetAppProperty`로 읽어야 한다.
 - **새로 발견한 문제**: 옛 Win32 입력칸(CUAS 경유, 예: WinForms TextBox)에서는 키마다 조합이 끊겨 백엔드가 매번 처음부터 시작한다 (미리보기가 d → k → s 한 글자씩). 메모장(TSF 지원 RichEdit)은 정상. 다음 작업으로 조사 필요.
 
+## 설정 파일과 일본어 Space (2026-11-23)
+
+- 설정: `%LOCALAPPDATA%\multilang-ime\settings.json` (백엔드가 처음 시작할 때 기본값으로 만든다, 고치면 1초 안에 반영, BOM 있어도 됨). 설정 화면이 생기기 전까지는 직접 고친다.
+
+  ```json
+  { "ja_space": "commit" }
+  ```
+
+- `ja_space` — 일본어 문맥에서 조합 중의 Space:
+  - `"commit"` (기본): 확정 + 전각 공백(U+3000). 예: `watashiha` Space → `私は　`.
+  - `"continue"`: 확정하지 않고 조합을 이어 간다 (문장을 한 번에 변환, 부분 변환으로 문절별 수정). 확정은 구두점·Enter·Shift+Space. Space 뒤 새 단어가 일본어가 아니면(로마자로 가나가 안 되는 글자 2개 이상 + 판정이 일본어 아님) 앞의 일본어를 먼저 확정하고 새 단어만 조합한다 (`watashiha` Space `dkssud` → `私は` 확정, `안녕` 조합).
+- 조합이 없을 때 Space는 문맥과 상관없이 보통 공백(앱에 넘김). 전각 공백은 언제나 Shift+Space.
+- 한국어·영어 문맥의 Space는 그대로 확정 + 공백.
+
 ## 알려진 한계
 
 - 한국어 모델은 wordfreq의 형태소 단위 목록이라 어절 패턴이 약하다.
