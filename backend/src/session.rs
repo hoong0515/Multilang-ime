@@ -33,6 +33,7 @@ const PICK_KEYS: u16 = 5; // 숫자 1~5
 const EXPRESSIVE_JAMO: &str = "ㅋㅎㅠㅜㄷㅇㄱㅅㅂㅈㄴㅊ";
 const MOZC_RETRY: Duration = Duration::from_secs(30);
 const FULLWIDTH: &str = "全角";
+const HANJA: &str = "漢";
 
 const VK_BACK: u16 = 0x08;
 const VK_RETURN: u16 = 0x0D;
@@ -691,7 +692,20 @@ impl<'m> Session<'m> {
             }
         }
         let (good, broken): (Vec<Choice>, Vec<Choice>) = lang_choices.into_iter().partition(|c| !has_broken_hangul(&c.cand));
-        out.extend(good);
+        // 한 언어 후보 → 한자 → 여러 언어가 섞인 후보 → 깨진 한글 후보
+        let (single, mixed): (Vec<Choice>, Vec<Choice>) = good.into_iter().partition(|c| c.cand.form.len() == 1);
+        out.extend(single);
+        // 한국어 한 단어면 한자 후보
+        if let [(Lang::Ko, _)] = t.chosen.form.as_slice() {
+            let reading = t.chosen.segments[0].text.clone();
+            let room = MAX_CANDIDATES.saturating_sub(out.len() + 1);
+            for h in crate::hanja::candidates(&reading, room) {
+                if !out.iter().any(|o| o.text() == h) {
+                    out.push(Choice { cand: t.chosen.clone(), texts: vec![h], mozc_pick: None, label: HANJA.into() });
+                }
+            }
+        }
+        out.extend(mixed);
         out.extend(broken);
         out.truncate(MAX_CANDIDATES - 1);
         // 영어 토큰에는 전각 후보 (항상 자리를 남겨 둔다)
@@ -775,6 +789,9 @@ impl<'m> Session<'m> {
                     segs.push(seg(shown, lang));
                 }
             }
+            if c.label == HANJA {
+                crate::hanja::learn(&c.cand.segments[0].text, &text);
+            }
             // 학습: 확정한 형태를 기록하고 저장한다
             if let Ok(mut h) = self.history.lock() {
                 h.record(&self.keys, &c.cand.form);
@@ -829,6 +846,26 @@ mod tests {
             };
         }
         r
+    }
+
+    #[test]
+    fn hanja_candidates() {
+        let Some(m) = models() else { return };
+        crate::hanja::load_for_test(&[("학교", &["學校", "學敎"])]);
+        let mut s = session(&m);
+        type_keys(&mut s, "gkrry");
+        let list = s.shift_tap().candidates.expect("window");
+        let i = list.items.iter().position(|t| t == "學校").expect("hanja candidate");
+        assert_eq!(list.labels[i], "漢");
+        assert!(list.items.iter().any(|t| t == "學敎"));
+        // 고르면 한자로 확정되고, 다음에는 고른 것이 먼저
+        s.key(&key(0x31 + i as u16, false)); // 숫자 (1~5 안일 때만)
+        if i < 5 {
+            assert_eq!(s.key(&key(VK_SPACE, false)).commit.as_deref(), Some("學校 "));
+        }
+        crate::hanja::learn("학교", "學敎");
+        crate::hanja::learn("학교", "學敎");
+        assert_eq!(crate::hanja::candidates("학교", 9)[0], "學敎");
     }
 
     #[test]

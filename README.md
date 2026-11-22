@@ -208,6 +208,15 @@ python poc/mozc/run_poc.py
   - `kinou`→機能, `amegafurusoudesu`→雨が古そうです는 문장 통째로 넣어도 같다. 공개 Mozc 자체의 판단이다.
   - 시험으로 확정한 문장이 Mozc에 학습돼 결과를 오염시켜서 Mozc 사용자 학습을 지웠다 (`Session::clear_learning`). 시험 확정은 학습을 남긴다는 점에 주의.
 
+## M5 안정화 2: 방향키·영단어+조사·한자 (2026-11-23)
+
+- 후보창이 열려 있으면 방향키로 후보 이동 (↓→ 다음, ↑← 이전).
+- Mozc 서버는 백엔드 시작 때 백그라운드로 미리 띄운다 (키 처리 중 실행 금지, 시작 직후에도 키당 최대 4 ms). 50 ms 넘는 요청은 `slow request`로 로그.
+- 소문자 영단어 + 일본어 조사 (`mailwo`, `zoomdekaiginisankashita`): 흔한 영단어 뒤가 조사로 시작해 가나로 풀리면 영어+일본어로 나눈다. 패턴 세트 26→36/43, 공개 데이터 변화 없음.
+- 영단어 뒤 일본어 구간은 Mozc에 `これ`를 붙여 변환하고 떼어 낸다 (`Youtubeに動画を上げた`, 이전엔 `二動画`).
+- 한국어 한 단어의 후보창에 한자 후보 (`학교`→學校). 사전: libhangul `hanja.txt` (BSD-3-Clause). 고른 한자는 `%LOCALAPPDATA%\multilang-ime\hanja_learn.json`에 학습.
+- 배포 주의: TIP는 백엔드가 없으면 바로 다시 띄우므로, `backend.exe`는 실행 중 파일 이름을 바꾸고 새 파일을 넣는 식으로 교체한다. 시험용 예제로 띄운 mozc_server(Claude 앱 문맥)가 남아 있으면 작업 스케줄러 백엔드가 Mozc에 붙지 못한다.
+
 ## 알려진 한계
 
 - 한국어 모델은 wordfreq의 형태소 단위 목록이라 어절 패턴이 약하다.

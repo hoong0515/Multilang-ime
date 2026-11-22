@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod hanja;
 mod session;
 
 use std::ffi::c_void;
@@ -140,6 +141,11 @@ fn main() {
     let history: SharedHistory = Arc::new(Mutex::new(History::load(&data_dir().join("history.json"))));
     if let Ok(h) = history.lock() {
         log(&format!("history entries: {}", h.len()));
+    }
+    // 한자 사전은 시작할 때 백그라운드로 읽는다 (약 30만 항목)
+    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+        let learn = data_dir().join("hanja_learn.json");
+        std::thread::spawn(move || hanja::load(&dir.join("hanja.txt"), learn));
     }
     // Mozc 서버는 시작할 때 미리 띄운다 (첫 일본어 키에서 띄우면 TIP가 시간 초과로 키를 놓친다)
     if let Some(server) = mozc_server_path() {
