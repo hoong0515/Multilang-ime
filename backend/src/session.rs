@@ -39,6 +39,10 @@ const VK_RETURN: u16 = 0x0D;
 const VK_ESCAPE: u16 = 0x1B;
 const VK_SPACE: u16 = 0x20;
 const VK_OEM_MINUS: u16 = 0xBD;
+const VK_LEFT: u16 = 0x25;
+const VK_UP: u16 = 0x26;
+const VK_RIGHT: u16 = 0x27;
+const VK_DOWN: u16 = 0x28;
 
 // ---------------------------------------------------------------- Mozc 연결
 
@@ -422,6 +426,10 @@ impl<'m> Session<'m> {
                 return eat;
             }
         }
+        // 후보창이 열려 있으면 방향키로 후보를 옮긴다 (없으면 아래에서 먼저 확정하고 앱에 넘긴다)
+        if self.open.is_some() && matches!(k.vk, VK_LEFT..=VK_DOWN) && !k.ctrl && !k.alt {
+            return eat;
+        }
         match k.vk {
             VK_BACK | VK_SPACE | VK_RETURN | VK_ESCAPE => eat,
             _ => Response { flush_first: true, ..Default::default() },
@@ -470,6 +478,22 @@ impl<'m> Session<'m> {
                     self.pinned = Some(c.clone());
                     self.open = None;
                     return self.respond();
+                }
+            }
+        }
+        if let Some((list, sel)) = &mut self.open {
+            if !k.ctrl && !k.alt {
+                let n = list.len().max(1);
+                match k.vk {
+                    VK_DOWN | VK_RIGHT => {
+                        *sel = (*sel + 1) % n;
+                        return self.respond();
+                    }
+                    VK_UP | VK_LEFT => {
+                        *sel = (*sel + n - 1) % n;
+                        return self.respond();
+                    }
+                    _ => {}
                 }
             }
         }
@@ -837,6 +861,21 @@ mod tests {
         let mut s2 = session(&m);
         type_keys(&mut s2, "zz");
         assert_eq!(s2.shift_tap().candidates.expect("window").items[0], "ㅋㅋ");
+    }
+
+    #[test]
+    fn arrow_keys_move_selection() {
+        let Some(m) = models() else { return };
+        let mut s = session(&m);
+        type_keys(&mut s, "go");
+        // 후보창이 없을 때 방향키는 먼저 확정하고 앱에 넘긴다
+        assert!(s.test(&key(VK_DOWN, false)).flush_first);
+        let list = s.shift_tap().candidates.expect("window");
+        assert!(s.test(&key(VK_DOWN, false)).eaten);
+        assert_eq!(s.key(&key(VK_DOWN, false)).candidates.unwrap().selected, 2 % list.items.len());
+        assert_eq!(s.key(&key(VK_UP, false)).candidates.unwrap().selected, 1);
+        assert_eq!(s.key(&key(VK_LEFT, false)).candidates.unwrap().selected, 0);
+        assert_eq!(s.key(&key(VK_UP, false)).candidates.unwrap().selected, list.items.len() - 1);
     }
 
     #[test]

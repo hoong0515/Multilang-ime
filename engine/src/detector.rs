@@ -44,6 +44,9 @@ const JA_EDGE: [&str; 15] = ["の", "を", "が", "は", "に", "で", "と", "�
 const JA_TAIL_EXTRA: [&str; 11] = ["には", "では", "とは", "への", "での", "からの", "までの", "にも", "へと", "とか", "なら"];
 /// 이 빈도(zipf) 이상의 영어 단어는 영어로 시작하는 분할을 만들지 않는다 (She -> Sへ, into -> in|と 방지)
 const EN_WORD_KEEP: f64 = 3.0;
+/// 소문자 "영단어 + 일본어 조사…" 분할을 허용할 영단어의 최소 빈도 (zipf).
+const EN_PARTICLE_WORD: f64 = 3.0;
+// 이 분할에 가산점을 주면 (1~4) 패턴은 37~38/43으로 늘지만 일본어 문절 오류율이 1.72→1.75~2.03%로 나빠져 주지 않는다.
 const LATTICE_K: usize = 3;
 
 pub type Form = Vec<(Lang, usize)>;
@@ -362,6 +365,19 @@ impl<'m> Detector<'m> {
             lst.truncate(LATTICE_K);
         };
         let min_len = |lang: Lang| if lang == Lang::En { ms } else { ms.max(2) };
+        // 흔한 영단어 + 일본어 조사로 시작해 가나로 남김없이 풀리는 나머지 (mailwookutta, zoomdekaigi…)
+        let en_particle = |i: usize, j: usize| -> bool {
+            if !has_ja || j - i < 2 || j >= n {
+                return false;
+            }
+            let word = keys_slice(&cs, i, j).to_lowercase();
+            if self.m.en_zipf.get(&word).copied().unwrap_or(0.0) < EN_PARTICLE_WORD {
+                return false;
+            }
+            let rest = keys_slice(&cs, j, n);
+            let p = crate::romaji::parse(&rest);
+            p.leftover == 0 && JA_EDGE.iter().any(|e| p.kana.starts_with(e))
+        };
         let may_end = |lang: Lang, i: usize, j: usize| -> bool {
             if j == n {
                 return true;
@@ -372,7 +388,7 @@ impl<'m> Detector<'m> {
             if upper[i..j].iter().any(|&u| u) {
                 return true;
             }
-            (has_ko && n - j <= self.p.lower_suffix_max) || (has_ja && n - j <= 8)
+            (has_ko && n - j <= self.p.lower_suffix_max) || (has_ja && n - j <= 8) || en_particle(i, j)
         };
 
         // 토큰 전체가 흔한 영어 단어면 영어로 시작하는 분할을 만들지 않는다
@@ -404,9 +420,10 @@ impl<'m> Detector<'m> {
                                 if l2 == Lang::Ko && n - j <= self.p.lower_suffix_max {
                                     // 소문자 영어 + 한국어 어미 (vga카드로는)
                                 } else if l2 == Lang::Ja
-                                    && self.ja_tail.contains(Self::render(Lang::Ja, &keys_slice(&cs, j, n)).as_str())
+                                    && (self.ja_tail.contains(Self::render(Lang::Ja, &keys_slice(&cs, j, n)).as_str())
+                                        || en_particle(seg_start, j))
                                 {
-                                    // 소문자 영어 + 일본어 조사 (illと, cmに)
+                                    // 소문자 영어 + 일본어 조사 (illと, cmに, mailをおくった)
                                 } else {
                                     continue;
                                 }
