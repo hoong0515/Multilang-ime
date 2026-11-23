@@ -712,7 +712,8 @@ impl ITfDisplayAttributeProvider_Impl for TextService_Impl {
 impl ITfCompositionSink_Impl for TextService_Impl {
     /// 앱이 조합을 강제로 끝냈을 때 (클릭으로 커서 이동 등): 표시된 대로 확정된 것으로 보고 백엔드 상태를 비운다.
     fn OnCompositionTerminated(&self, _ecwrite: u32, _pcomposition: Ref<ITfComposition>) -> Result<()> {
-        debug_note("composition terminated by app");
+        debug_note(&format!("composition terminated by app (focus class {})", focus_class()));
+        note_composition_terminated_by_app();
         self.reset();
         Ok(())
     }
@@ -743,7 +744,57 @@ const OFF_SCOPES: &[i32] = &[
 /// 조합 창은 CUAS를 거치는 Win32 편집 컨트롤에서만 사용한다.
 /// TS_SS_TRANSITORY는 사용 주기가 짧은 문서라는 뜻이라, 이것만으로 옛 입력칸을 판별하면
 /// 그 플래그를 쓰는 다른 TSF 문맥까지 조합 창 모드로 잘못 분류할 수 있다.
+/// 처음부터 조합 창 모드로 쓰는 프로그램 (자체 입력칸이 조합을 키마다 끝내는 것으로 확인된 것).
+const FLOATING_APPS: [&str; 1] = ["kakaotalk.exe"];
+
+/// 조합을 시작하자마자 앱이 끝내 버리는 입력칸을 배운다 (창 클래스 단위, 이 프로세스 동안).
+/// 조합을 시작하고 0.5초 안에 앱이 끝내는 일이 같은 클래스에서 두 번 이어지면 그 클래스는 조합 창 모드로 쓴다.
+struct QuickEnd {
+    started: Option<(Instant, String)>,
+    count: u32,
+    learned: Vec<String>,
+}
+static QUICK_END: std::sync::Mutex<QuickEnd> = std::sync::Mutex::new(QuickEnd { started: None, count: 0, learned: Vec::new() });
+
+fn focus_class() -> String {
+    let focus = unsafe { GetFocus() };
+    if focus.0.is_null() {
+        return String::new();
+    }
+    let mut buf = [0u16; 128];
+    let n = unsafe { GetClassNameW(focus, &mut buf) } as usize;
+    String::from_utf16_lossy(&buf[..n])
+}
+
+fn note_composition_started() {
+    if let Ok(mut q) = QUICK_END.lock() {
+        q.started = Some((Instant::now(), focus_class()));
+    }
+}
+
+fn note_composition_terminated_by_app() {
+    let Ok(mut q) = QUICK_END.lock() else { return };
+    let class = focus_class();
+    let quick = q.started.take().is_some_and(|(t, c)| t.elapsed() < Duration::from_millis(500) && c == class);
+    if !quick {
+        q.count = 0;
+        return;
+    }
+    q.count += 1;
+    if q.count >= 2 && !class.is_empty() && !q.learned.contains(&class) {
+        debug_note(&format!("floating mode learned for class {class}"));
+        q.learned.push(class);
+    }
+}
+
 fn legacy_floating(context: &ITfContext) -> bool {
+    if FLOATING_APPS.contains(&app_name().to_lowercase().as_str()) {
+        return true;
+    }
+    let class = focus_class();
+    if !class.is_empty() && QUICK_END.lock().is_ok_and(|q| q.learned.contains(&class)) {
+        return true;
+    }
     let transitory = unsafe { context.GetStatus() }
         .map(|st| st.dwStaticFlags & TS_SS_TRANSITORY != 0)
         .unwrap_or(false);
@@ -905,6 +956,7 @@ impl EditSession {
         let cc: ITfContextComposition = self.context.cast()?;
         let comp = unsafe { cc.StartComposition(ec, &range, &self.sink)? };
         debug_note("composition started");
+        note_composition_started();
         self.state.try_borrow_mut().map_err(|_| E_FAIL)?.composition = Some(comp.clone());
         Ok(comp)
     }
