@@ -200,6 +200,20 @@ impl MozcBridge {
         }
     }
 
+    /// Mozc 사용자 학습을 지운다 (서버가 준비돼 있을 때).
+    pub fn clear_learning(&mut self) {
+        self.cache.clear();
+        if !self.ensure() {
+            crate::log("mozc: not ready, learning not cleared");
+            return;
+        }
+        if let Some(s) = self.session.as_mut() {
+            if let Err(e) = s.clear_learning() {
+                self.drop_session("clear learning", e);
+            }
+        }
+    }
+
     fn drop_session(&mut self, why: &str, e: mozc::Error) {
         crate::log(&format!("mozc: {why} failed: {e:?}"));
         self.session = None;
@@ -581,6 +595,8 @@ pub struct Session<'m> {
     history: SharedHistory,
     history_path: Option<PathBuf>,
     mozc: MozcBridge,
+    /// 이 연결의 프로그램 실행 파일 이름 (Hello)
+    pub app: String,
 }
 
 impl<'m> Session<'m> {
@@ -603,7 +619,50 @@ impl<'m> Session<'m> {
             history,
             history_path,
             mozc: MozcBridge::new(mozc_server),
+            app: String::new(),
         }
+    }
+
+    /// 설정을 반영한다 (요청마다): 사용할 언어. 조합 중에는 바꾸지 않는다.
+    pub fn apply_settings(&mut self, s: &crate::settings::Settings) {
+        if self.composing() {
+            return;
+        }
+        let mut langs = vec![Lang::En];
+        if s.languages.ko {
+            langs.push(Lang::Ko);
+        }
+        if s.languages.ja {
+            langs.push(Lang::Ja);
+        }
+        if self.det.langs != langs {
+            crate::log(&format!("languages: {langs:?}"));
+            self.det.langs = langs;
+            if self.prev.is_some_and(|l| !self.det.langs.contains(&l)) {
+                self.prev = None;
+                self.run = 0;
+            }
+        }
+    }
+
+    /// 이 프로그램에서 IME를 끈 상태인가 (조합 중이면 끝까지 받는다).
+    pub fn app_off(&self, s: &crate::settings::Settings) -> bool {
+        !self.composing() && s.app_disabled(&self.app)
+    }
+
+    /// 학습 기록을 모두 지운다: 판정 기록(history.json), 한자 선택, Mozc 사용자 학습.
+    pub fn clear_learning(&mut self) -> Response {
+        self.clear();
+        if let Ok(mut h) = self.history.lock() {
+            *h = engine::detector::History::default();
+            if let Some(p) = &self.history_path {
+                let _ = h.save(p);
+            }
+        }
+        crate::hanja::clear_learning();
+        self.mozc.clear_learning();
+        crate::log("learning cleared");
+        Response::default()
     }
 
     fn composing(&self) -> bool {
@@ -1302,6 +1361,39 @@ mod tests {
             };
         }
         r
+    }
+
+    #[test]
+    fn language_selection() {
+        let Some(m) = models() else { return };
+        let mut s = session(&m);
+        let mut st = crate::settings::Settings::default();
+        // 일본어를 끄면 로마자 일본어도 일본어로 판정하지 않는다
+        st.languages.ja = false;
+        s.apply_settings(&st);
+        let r = type_keys(&mut s, "watashiha");
+        assert!(r.preedit.iter().all(|p| p.lang != "ja"), "{:?}", r.preedit);
+        let list = s.shift_tap().candidates.unwrap_or_default();
+        assert!(list.labels.iter().all(|l| !l.contains("ja")), "{:?}", list.labels);
+        s.reset();
+        // 한국어를 끄면 두벌식 한국어도 한국어가 아니다
+        st.languages = crate::settings::Languages { ko: false, ja: true };
+        s.apply_settings(&st);
+        let r = type_keys(&mut s, "dkssud");
+        assert!(r.preedit.iter().all(|p| p.lang != "ko"), "{:?}", r.preedit);
+        s.reset();
+        s.apply_settings(&crate::settings::Settings::default());
+        let r = type_keys(&mut s, "dkssud");
+        assert_eq!(r.preedit_text(), "안녕");
+    }
+
+    #[test]
+    fn app_disabled_matching() {
+        let st = crate::settings::Settings { disabled_apps: vec!["Game.exe".into(), "photoshop".into()], ..Default::default() };
+        assert!(st.app_disabled("game.EXE"));
+        assert!(st.app_disabled("Photoshop.exe"));
+        assert!(!st.app_disabled("notepad.exe"));
+        assert!(!st.app_disabled(""));
     }
 
     #[test]

@@ -68,6 +68,10 @@ pub enum Request {
     Reset,
     /// 왼쪽 Shift를 짧게 눌렀다 뗌: 변환(다음 후보). 조합 중일 때만 보낸다.
     ShiftTap,
+    /// 연결 직후 TIP가 알리는 프로그램 실행 파일 이름 (앱별 자동 꺼짐).
+    Hello { app: String },
+    /// 설정 화면: 학습 기록(판정·한자·Mozc)을 모두 지운다.
+    ClearLearning,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

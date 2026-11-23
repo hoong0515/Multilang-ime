@@ -119,6 +119,11 @@ fn debug_log(what: &str, wparam: WPARAM, lparam: LPARAM) {
 }
 
 /// 진단 로그 한 줄 (MULTILANG_TIP_DEBUG 파일이 있을 때만).
+/// 이 프로세스의 실행 파일 이름 (예: notepad.exe).
+fn app_name() -> String {
+    std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default()
+}
+
 pub(crate) fn debug_note(what: &str) {
     debug_log(what, WPARAM(0), LPARAM(0));
 }
@@ -212,6 +217,8 @@ impl TextService_Impl {
             if c.generation != self.synced_gen.get() {
                 let keys = self.journal.borrow().clone();
                 let replay = (|| -> std::result::Result<(), client::Fail> {
+                    // 새 연결: 프로그램 이름을 알리고(앱별 자동 꺼짐) 지금 조합의 키를 되살린다
+                    c.transact(&Request::Hello { app: app_name() })?;
                     c.transact(&Request::Reset)?;
                     for key in keys {
                         c.transact(&Request::Key { key })?;

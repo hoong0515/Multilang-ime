@@ -30,15 +30,18 @@ GPL-3.0-or-later 자유 소프트웨어입니다 (`LICENSE.txt`, 제3자 구성 
 
 ## 설정
 
-`%LOCALAPPDATA%\multilang-ime\settings.json` (없으면 새로 만듭니다):
+시작 메뉴의 **Multilang IME Settings**에서 바꿉니다. 저장하면 바로 적용됩니다 (앱을 다시 열 필요 없음).
+
+- **사용할 언어**: 한국어·일본어를 자동 판정과 후보에서 뺄 수 있습니다 (영어는 항상 사용).
+- **일본어 문맥에서 Space**: 확정 + 전각 공백(기본) / 확정하지 않고 이어서 변환.
+- **자동 꺼짐 프로그램**: 실행 파일 이름(예: `game.exe`)을 넣으면 그 프로그램에서는 IME가 키를 받지 않습니다.
+- **학습 기록 지우기**: 언어 판정·한자 선택·일본어 변환(Mozc) 학습을 모두 지웁니다.
+
+설정 파일은 `%LOCALAPPDATA%\multilang-ime\settings.json`입니다:
 
 ```json
-{ "ja_space": "continue" }
+{ "ja_space": "commit", "languages": { "ko": true, "ja": true }, "disabled_apps": ["game.exe"] }
 ```
-
-- `ja_space`: 일본어 문맥의 Space. 기본(`commit`)은 확정 + 전각 공백, `continue`는 확정하지 않고 이어서 변환.
-
-학습 기록은 같은 폴더의 `history.json`, `hanja_learn.json`입니다. 지우면 처음 상태로 돌아갑니다.
 
 ## 알아 둘 점
 

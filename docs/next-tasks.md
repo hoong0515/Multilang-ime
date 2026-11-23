@@ -62,7 +62,12 @@
 11. **(부분 완료) 설치 프로그램** — 절차는 `docs/release.md`.
     - 완료: zip 패키지(`installeruild-release.ps1`), `install.ps1`/`uninstall.ps1` — Program Files 복사, 64·32비트 등록, 앱 컨테이너 읽기 권한, UI-less 카테고리, Users 그룹 로그온 작업, 한국어 입력 목록 추가. 시험 실행(-DryRun)만 했고 실제 설치는 아직.
     - 남은 것: 실제 설치 시험, 코드 서명, 작업 표시줄 검색창용 UIAccess 후보창 프로세스(서명·Program Files 설치가 조건), .exe(Inno Setup)/MSI 포장 여부 결정(시작 메뉴·프로그램 추가/제거 등록).
-12. **설정 화면 최소판**: 사용할 언어 선택, 자동 꺼짐 앱 목록, 학습 기록 지우기, 일본어 Space(`ja_space`). 지금은 `settings.json` 직접 편집.
+12. **(완료) 설정 화면 최소판**: `settings\Settings.cs` (WinForms, .NET Framework 4.x 기본 csc, `settingsuild.ps1`) → `MultilangIME-Settings.exe`, 설치 때 시작 메뉴 바로 가기.
+    - 사용할 언어(`languages.ko/ja`, 영어는 항상): 백엔드가 요청마다 판정기 언어 목록에 반영 (조합 중에는 안 바꿈).
+    - 자동 꺼짐 프로그램(`disabled_apps`): TIP가 새 연결마다 `Hello{app}`으로 실행 파일 이름을 알리고, 백엔드가 Test/Key를 먹지 않음.
+    - 학습 기록 지우기: 파이프 `ClearLearning` → history.json, hanja_learn.json, Mozc 사용자 학습. 백엔드가 없으면 파일만 지움.
+    - 일본어 Space(`ja_space`).
+    - 실제 앱에서 확인할 것: 자동 꺼짐 목록, 언어 끄기, 학습 지우기 (개발판 deployd에 배포함, 앱은 다시 열어야 새 TIP).
 13. **(완료, 입력칸 부분) 자동 꺼짐**: 비밀번호·숫자·이메일·URL 칸, 꺼진 문맥 (README "자동 꺼짐"). 남은 것: 관리자 앱, 게임, 앱별 목록(설정 화면과 함께).
 
 ## D. 나중에

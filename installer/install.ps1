@@ -26,7 +26,7 @@ if (-not $admin -and -not $DryRun) {
     return
 }
 
-foreach ($f in @("multilang_tip.dll", "backend.exe", "engine_model.json", "hanja.txt", "x86\multilang_tip.dll", "mozc\mozc_server.exe")) {
+foreach ($f in @("multilang_tip.dll", "backend.exe", "MultilangIME-Settings.exe", "engine_model.json", "hanja.txt", "x86\multilang_tip.dll", "mozc\mozc_server.exe")) {
     if (-not (Test-Path (Join-Path $Src $f))) { throw "missing in package: $f" }
 }
 
@@ -79,7 +79,15 @@ Step "scheduled task '$TaskName'" {
     Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 }
 
-# 6. Add the Korean profile to this user's input methods
+# 6. Start menu shortcut for the settings app (all users)
+Step "start menu shortcut" {
+    $sh = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Multilang IME Settings.lnk"))
+    $sh.TargetPath = Join-Path $Dest "MultilangIME-Settings.exe"
+    $sh.WorkingDirectory = $Dest
+    $sh.Save()
+}
+
+# 7. Add the Korean profile to this user's input methods
 if (-not $NoLanguageList) {
     Step "add input method to the language list" {
         $tip = "0412:$Clsid$ProfileKo"

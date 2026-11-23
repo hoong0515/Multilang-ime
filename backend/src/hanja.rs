@@ -64,6 +64,16 @@ pub fn candidates(reading: &str, max: usize) -> Vec<String> {
     out
 }
 
+/// 한자 선택 학습을 지운다.
+pub fn clear_learning() {
+    if let Ok(mut l) = LEARN.lock() {
+        if let Some((path, m)) = l.as_mut() {
+            m.clear();
+            let _ = std::fs::write(path, "{}");
+        }
+    }
+}
+
 /// 한자를 골랐다: 학습하고 저장한다.
 pub fn learn(reading: &str, hanja: &str) {
     if let Ok(mut l) = LEARN.lock() {

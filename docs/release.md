@@ -8,6 +8,7 @@ powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.
 
 - x64(`tip`, `backend`)와 x86(`tip`)을 빌드해 `dist\MultilangIME-<버전>\`에 모으고 zip과 SHA-256을 만든다.
 - 넣는 것: TIP DLL(x64 루트, 32비트는 `x86\`), `backend.exe`, `engine_model.json`, `hanja.txt`, `mozc\`(공식 MSI에서 꺼낸 mozc_server와 VC 런타임, 학습 DB는 빼고), `LICENSE.txt`(GPL-3.0), `THIRD-PARTY-NOTICES.md`, `licenses\`, 사용자용 `README.md`(`installer\README-install.md`), 설치·제거 스크립트.
+- 설정 화면 `MultilangIME-Settings.exe`도 함께 빌드해 넣는다 (`settingsuild.ps1`).
 - 재료: `data\engine_model.json`(`python -m ime_v0.export_model`), `deploy\x64\mozc\`.
 
 ## 설치 스크립트 (`installer\install.ps1`)
@@ -17,7 +18,8 @@ powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.
 2. 샌드박스 앱용 읽기 권한: ALL APPLICATION PACKAGES(S-1-15-2-1), ALL RESTRICTED APPLICATION PACKAGES(S-1-15-2-2).
 3. `regsvr32`로 64비트(System32)·32비트(SysWOW64) 등록. 등록 카테고리에 UI-less(`GUID_TFCAT_TIPCAP_UIELEMENTENABLED`) 포함.
 4. 작업 스케줄러 "MultilangIME Backend": Users 그룹, 로그온 때, 그 사용자 권한(제한)으로 실행.
-5. 설치한 사용자의 한국어 입력 방법 목록에 추가 (`-NoLanguageList`로 끔).
+5. 시작 메뉴 바로 가기 "Multilang IME Settings" (모든 사용자).
+6. 설치한 사용자의 한국어 입력 방법 목록에 추가 (`-NoLanguageList`로 끔).
 
 `-DryRun`은 단계만 보여 준다. 제거는 설치 폴더의 `uninstall.ps1` (`-RemoveUserData`로 설정·학습까지).
 

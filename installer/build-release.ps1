@@ -10,6 +10,7 @@ if (-not $NoBuild) {
     if ($LASTEXITCODE) { throw "x64 build failed" }
     cargo build --release -p tip --target i686-pc-windows-msvc
     if ($LASTEXITCODE) { throw "x86 build failed" }
+    & "$Root\settings\build.ps1"
 }
 
 $Name = "MultilangIME-$Version"
@@ -23,6 +24,7 @@ function Put($from, $to) {
 }
 Put "target\release\multilang_tip.dll" "multilang_tip.dll"
 Put "target\release\backend.exe" "backend.exe"
+Put "target\settings\MultilangIME-Settings.exe" "MultilangIME-Settings.exe"
 Put "target\i686-pc-windows-msvc\release\multilang_tip.dll" "x86\multilang_tip.dll"
 Put "data\engine_model.json" "engine_model.json"
 Put "third_party\libhangul\hanja.txt" "hanja.txt"

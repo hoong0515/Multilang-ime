@@ -28,6 +28,9 @@ Step "remove input method from the language list" {
     }
     Set-WinUserLanguageList $list -Force
 }
+Step "remove start menu shortcut" {
+    Remove-Item (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Multilang IME Settings.lnk") -Force -ErrorAction SilentlyContinue
+}
 Step "remove scheduled task" {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 }

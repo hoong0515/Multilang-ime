@@ -101,9 +101,18 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory)
         let t = std::time::Instant::now();
         let req = serde_json::from_slice::<Request>(&msg);
         let op = req.as_ref().map(|r| format!("{r:?}")).unwrap_or_default();
+        let settings = settings::current();
+        session.apply_settings(&settings);
+        let off = session.app_off(&settings);
         let resp = match req {
+            Ok(Request::Test { .. } | Request::Key { .. }) if off => Response::default(),
             Ok(Request::Test { key }) => session.test(&key),
             Ok(Request::Key { key }) => session.key(&key),
+            Ok(Request::Hello { app }) => {
+                session.app = app;
+                Response::default()
+            }
+            Ok(Request::ClearLearning) => session.clear_learning(),
             Ok(Request::Flush) => session.flush(),
             Ok(Request::Reset) => session.reset(),
             Ok(Request::ShiftTap) => session.shift_tap(),
