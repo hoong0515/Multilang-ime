@@ -6,10 +6,13 @@ version 3 or (at your option) any later version. See `LICENSE`.
 The distribution includes or is built from the following third-party components.
 Their license terms apply to those components.
 
-## Mozc (mozc_server.exe and its runtime)
+## Mozc (mozc_stdio.exe / mozc_server.exe and its runtime)
 
-- Files: `mozc\mozc_server.exe`, `mozc\documents\credits_en.html`
-- Source: https://github.com/google/mozc (official release build, unmodified)
+- Files: `mozc\mozc_stdio.exe` (or `mozc\mozc_server.exe`), `mozc\documents\credits_en.html`
+- Source: https://github.com/google/mozc. `mozc_stdio.exe` is built from the Mozc source with a small
+  stdin/stdout front end (`mozc-helper/` in this project, GPL-3.0-or-later; the only change to Mozc
+  itself is Bazel visibility for that package). `mozc_server.exe`, when shipped, is the official
+  release build, unmodified.
 - License: BSD 3-Clause, "Copyright 2010-2018, Google Inc."
   Full text: `licenses\mozc-LICENSE.txt`. `mozc\documents\credits_en.html` lists
   the licenses of the components and dictionaries bundled inside Mozc.

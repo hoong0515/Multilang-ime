@@ -1,0 +1,14 @@
+# Copied into <mozc>/src/multilang by mozc-helper/build.ps1.
+load("//:build_defs.bzl", "mozc_cc_binary")
+
+mozc_cc_binary(
+    name = "mozc_stdio",
+    srcs = ["mozc_stdio.cc"],
+    deps = [
+        "//base:init_mozc",
+        "//base:system_util",
+        "//engine:engine_factory",
+        "//protocol:commands_cc_proto",
+        "//session:session_handler",
+    ],
+)

@@ -26,13 +26,17 @@ if (-not $admin -and -not $DryRun) {
     return
 }
 
-foreach ($f in @("multilang_tip.dll", "backend.exe", "MultilangIME-Settings.exe", "engine_model.json", "hanja.txt", "x86\multilang_tip.dll", "mozc\mozc_server.exe")) {
+foreach ($f in @("multilang_tip.dll", "backend.exe", "MultilangIME-Settings.exe", "engine_model.json", "hanja.txt", "x86\multilang_tip.dll")) {
     if (-not (Test-Path (Join-Path $Src $f))) { throw "missing in package: $f" }
+}
+
+if (-not ((Test-Path (Join-Path $Src "mozc\mozc_stdio.exe")) -or (Test-Path (Join-Path $Src "mozc\mozc_server.exe")))) {
+    throw "missing in package: mozc\mozc_stdio.exe (or mozc_server.exe)"
 }
 
 # 1. Stop the running backend and Mozc started from an older install in $Dest
 Step "stop old backend" {
-    Get-Process backend, mozc_server -ErrorAction SilentlyContinue |
+    Get-Process backend, mozc_server, mozc_stdio -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($Dest, [StringComparison]::OrdinalIgnoreCase) } |
         Stop-Process -Force
 }

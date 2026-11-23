@@ -29,6 +29,11 @@ Put "target\i686-pc-windows-msvc\release\multilang_tip.dll" "x86\multilang_tip.d
 Put "data\engine_model.json" "engine_model.json"
 Put "third_party\libhangul\hanja.txt" "hanja.txt"
 Put "deploy\x64\mozc" "mozc"
+# Mozc: self-built stdio helper if available (then the official server is not shipped)
+if (Test-Path "target\mozc-helper\mozc_stdio.exe") {
+    Copy-Item "target\mozc-helper\mozc_stdio.exe" "$Out\mozc\mozc_stdio.exe" -Force
+    Remove-Item "$Out\mozc\mozc_server.exe" -Force -ErrorAction SilentlyContinue
+}
 Put "LICENSE" "LICENSE.txt"
 Put "THIRD-PARTY-NOTICES.md" "THIRD-PARTY-NOTICES.md"
 Put "third_party\mozc\LICENSE" "licenses\mozc-LICENSE.txt"

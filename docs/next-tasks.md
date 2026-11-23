@@ -70,7 +70,7 @@
 ## C. 배포 준비
 
 9. **(완료) 라이선스**: GPL-3.0-or-later. `LICENSE`(원문), `THIRD-PARTY-NOTICES.md`(Mozc BSD-3, VC 런타임, libhangul 한자 사전 BSD-3, wordfreq 데이터 CC BY-SA 4.0, Rust 크레이트 MIT/Apache). 기획서의 "라이선스 미정"은 아직 갱신 안 함.
-10. **Mozc 배포 방식**: 지금은 공식 MSI에서 꺼낸 mozc_server를 쓴다. Meltype처럼 Mozc를 직접 빌드한 도우미(stdin/stdout)로 바꾸면 실행 문제(가장 토큰, 패키지 앱 문맥)와 브랜딩이 풀린다. Bazel 빌드 30~40분.
+10. **(완료, `docs/mozc-helper.md`) Mozc 배포 방식**: 직접 빌드한 표준 입출력 도우미 `mozc_stdio.exe`를 백엔드 자식으로 띄움 (공식 서버와 같은 변환·지연, 시작 약 340 ms, 학습은 `%LOCALAPPDATA%\multilang-ime\mozc`에 따로). 릴리스에는 도우미만 넣는다. 실사용 확인 남음. 이전 메모: 지금은 공식 MSI에서 꺼낸 mozc_server를 쓴다. Meltype처럼 Mozc를 직접 빌드한 도우미(stdin/stdout)로 바꾸면 실행 문제(가장 토큰, 패키지 앱 문맥)와 브랜딩이 풀린다. Bazel 빌드 30~40분.
 11. **(부분 완료) 설치 프로그램** — 절차는 `docs/release.md`.
     - 완료: zip 패키지(`installeruild-release.ps1`), `install.ps1`/`uninstall.ps1` — Program Files 복사, 64·32비트 등록, 앱 컨테이너 읽기 권한, UI-less 카테고리, Users 그룹 로그온 작업, 한국어 입력 목록 추가. 시험 실행(-DryRun)만 했고 실제 설치는 아직.
     - 남은 것: 실제 설치 시험, 코드 서명, 작업 표시줄 검색창용 UIAccess 후보창 프로세스(서명·Program Files 설치가 조건), .exe(Inno Setup)/MSI 포장 여부 결정(시작 메뉴·프로그램 추가/제거 등록).
