@@ -5,6 +5,10 @@
 //!   그래서 일시 정지 상태로 띄우고 우리 토큰을 가장 토큰으로 복제해 메인 스레드에 붙인 뒤 재개한다.
 //! - 서버가 사용자 프로필(LocalLow\Mozc)에 쓴 session.ipc에서 키를 읽어 \\.\pipe\mozc.<key>.session 에 붙는다.
 //! - 요청 하나마다 연결 하나 (src/ipc/win32_ipc.cc). 서버가 직전 연결의 ACK를 기다리는 동안은 PIPE_BUSY.
+//!
+//! 직접 빌드한 도우미(`mozc_stdio.exe`, `mozc-helper/`)를 주면 파이프 대신 표준 입출력으로 말한다:
+//! 4바이트 길이 + protobuf. 백엔드가 자식 프로세스로 하나 띄워 모든 연결이 함께 쓴다 (Mozc 세션 id로 구분).
+//! 가장 토큰·session.ipc가 필요 없고, 학습 데이터는 `%LOCALAPPDATA%\multilang-ime\mozc`에 따로 둔다.
 
 /// Mozc protobuf 정의에서 prost가 만든 코드 (패키지 구조 그대로).
 #[allow(clippy::all)]
@@ -21,7 +25,9 @@ pub mod mozc {
     }
 }
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use prost::Message;
@@ -138,22 +144,113 @@ fn read_shared(path: &Path) -> Result<Vec<u8>> {
     }
 }
 
-/// 서버 연결 정보 (파이프 이름).
+/// 표준 입출력 도우미 프로세스 (백엔드에 하나).
+pub struct Helper {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: std::process::ChildStdout,
+}
+
+static HELPER: Mutex<Option<Arc<Mutex<Helper>>>> = Mutex::new(None);
+
+/// 이 실행 파일이 표준 입출력 도우미인가 (이름으로 구분).
+pub fn is_stdio_helper(exe: &Path) -> bool {
+    exe.file_name().is_some_and(|n| n.to_string_lossy().to_ascii_lowercase().contains("stdio"))
+}
+
+/// 도우미의 학습 데이터 폴더.
+pub fn helper_profile_dir() -> PathBuf {
+    let base = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    Path::new(&base).join("multilang-ime").join("mozc")
+}
+
+fn spawn_helper(exe: &Path) -> Result<Arc<Mutex<Helper>>> {
+    use std::os::windows::process::CommandExt;
+    let profile = helper_profile_dir();
+    let _ = std::fs::create_dir_all(&profile);
+    let mut child = std::process::Command::new(exe)
+        .current_dir(exe.parent().unwrap_or(Path::new(".")))
+        .env("MULTILANG_MOZC_PROFILE", &profile)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .spawn()
+        .map_err(|e| Error::Proto(format!("spawn {}: {e}", exe.display())))?;
+    let stdin = child.stdin.take().ok_or(Error::NotRunning)?;
+    let stdout = child.stdout.take().ok_or(Error::NotRunning)?;
+    Ok(Arc::new(Mutex::new(Helper { child, stdin, stdout })))
+}
+
+/// 떠 있는 도우미를 끝낸다 (응답이 깨졌을 때 다음에 새로 띄우게).
+fn drop_helper(h: &Arc<Mutex<Helper>>) {
+    if let Ok(mut g) = HELPER.lock() {
+        if g.as_ref().is_some_and(|x| Arc::ptr_eq(x, h)) {
+            *g = None;
+        }
+    }
+    if let Ok(mut x) = h.lock() {
+        let _ = x.child.kill();
+    }
+}
+
+impl Helper {
+    fn call(&mut self, body: &[u8]) -> std::io::Result<Vec<u8>> {
+        self.stdin.write_all(&(body.len() as u32).to_le_bytes())?;
+        self.stdin.write_all(body)?;
+        self.stdin.flush()?;
+        let mut len = [0u8; 4];
+        self.stdout.read_exact(&mut len)?;
+        let n = u32::from_le_bytes(len) as usize;
+        if n > 64 << 20 {
+            return Err(std::io::Error::other("response too large"));
+        }
+        let mut out = vec![0u8; n];
+        self.stdout.read_exact(&mut out)?;
+        Ok(out)
+    }
+}
+
+/// 서버 연결: mozc_server의 파이프, 또는 표준 입출력 도우미.
 #[derive(Clone)]
-pub struct Client {
-    pipe: Vec<u16>,
+pub enum Client {
+    Pipe { pipe: Vec<u16> },
+    Stdio(Arc<Mutex<Helper>>),
 }
 
 impl Client {
-    /// 실행 중인 서버에 붙는다. 서버가 없으면 Error::NotRunning.
+    /// 실행 중인 mozc_server에 붙는다. 서버가 없으면 Error::NotRunning.
     pub fn connect() -> Result<Self> {
         let data = read_shared(&profile_dir().join("session.ipc")).map_err(|_| Error::NotRunning)?;
         let info = mozc::ipc::IpcPathInfo::decode(&data[..])?;
-        Ok(Self { pipe: wide(&format!(r"\\.\pipe\mozc.{}.session", info.key.unwrap_or_default())) })
+        Ok(Self::Pipe { pipe: wide(&format!(r"\\.\pipe\mozc.{}.session", info.key.unwrap_or_default())) })
     }
 
-    /// 서버가 없으면 띄우고 붙는다 (최대 약 5초 대기).
+    /// 이미 떠 있는 서버(도우미)에만 붙는다. 띄우지 않는다.
+    pub fn attach(server_exe: &Path) -> Result<Self> {
+        if is_stdio_helper(server_exe) {
+            let g = HELPER.lock().map_err(|_| Error::NotRunning)?;
+            return g.clone().map(Client::Stdio).ok_or(Error::NotRunning);
+        }
+        Self::connect()
+    }
+
+    /// 서버가 없으면 띄우고 붙는다 (mozc_server는 최대 약 5초 대기, 도우미는 엔진을 읽을 때까지 첫 요청이 기다린다).
     pub fn connect_or_launch(server_exe: &Path) -> Result<Self> {
+        if is_stdio_helper(server_exe) {
+            let mut g = HELPER.lock().map_err(|_| Error::NotRunning)?;
+            if let Some(h) = g.clone() {
+                let alive = h.lock().map(|mut x| matches!(x.child.try_wait(), Ok(None))).unwrap_or(false);
+                if alive {
+                    return Ok(Client::Stdio(h));
+                }
+            }
+            let h = spawn_helper(server_exe)?;
+            *g = Some(h.clone());
+            drop(g);
+            let c = Client::Stdio(h);
+            return if c.ping() { Ok(c) } else { Err(Error::NotRunning) };
+        }
         if let Ok(c) = Self::connect() {
             if c.ping() {
                 return Ok(c);
@@ -178,11 +275,24 @@ impl Client {
 
     pub fn call(&self, req: &Input) -> Result<Output> {
         let body = req.encode_to_vec();
+        let pipe = match self {
+            Client::Pipe { pipe } => pipe,
+            Client::Stdio(h) => {
+                let r = h.lock().map_err(|_| Error::NotRunning).and_then(|mut x| x.call(&body).map_err(|_| Error::NotRunning));
+                return match r {
+                    Ok(out) => Ok(Output::decode(&out[..])?),
+                    Err(e) => {
+                        drop_helper(h);
+                        Err(e)
+                    }
+                };
+            }
+        };
         unsafe {
             let mut h = None;
             for _ in 0..50 {
                 match CreateFileW(
-                    PCWSTR(self.pipe.as_ptr()),
+                    PCWSTR(pipe.as_ptr()),
                     GENERIC_READ.0 | GENERIC_WRITE.0,
                     FILE_SHARE_NONE,
                     None,
@@ -195,7 +305,7 @@ impl Client {
                         break;
                     }
                     Err(_) if GetLastError() == ERROR_PIPE_BUSY => {
-                        let _ = WaitNamedPipeW(PCWSTR(self.pipe.as_ptr()), 1000);
+                        let _ = WaitNamedPipeW(PCWSTR(pipe.as_ptr()), 1000);
                     }
                     Err(_) => return Err(Error::NotRunning),
                 }

@@ -20,12 +20,13 @@ static class Program
     static extern bool SetProcessDPIAware();
 
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
         try { SetProcessDPIAware(); } catch { }
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new SettingsForm());
+        // --dict: 사용자 사전 탭으로 연다
+        Application.Run(new SettingsForm(Array.IndexOf(args, "--dict") >= 0));
     }
 }
 
@@ -33,6 +34,7 @@ class SettingsForm : Form
 {
     static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "multilang-ime");
     static readonly string FilePath = Path.Combine(Dir, "settings.json");
+    static readonly string DictPath = Path.Combine(Dir, "user_dict.json");
 
     Dictionary<string, object> data = new Dictionary<string, object>();
     readonly CheckBox ko = new CheckBox { Text = "한국어", AutoSize = true };
@@ -42,8 +44,12 @@ class SettingsForm : Form
     readonly RadioButton spaceContinue = new RadioButton { Text = "확정하지 않고 이어서 변환", AutoSize = true };
     readonly ListBox apps = new ListBox { Height = 110, IntegralHeight = false };
     readonly TextBox appName = new TextBox();
+    readonly ListView dict = new ListView { View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false, Size = new Size(420, 330) };
+    // 친 키는 IME 없이 그대로 받는다 (영문 키 그대로 등록)
+    readonly TextBox dictKeys = new TextBox { Width = 130, ImeMode = ImeMode.Disable };
+    readonly TextBox dictText = new TextBox { Width = 170 };
 
-    public SettingsForm()
+    public SettingsForm(bool openDict = false)
     {
         Text = "Multilang IME 설정";
         Font = new Font("Segoe UI", 9f);
@@ -55,8 +61,17 @@ class SettingsForm : Form
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
         Padding = new Padding(12);
 
+        var outer = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
+        Controls.Add(outer);
+        var tabs = new TabControl { Size = new Size(500, 590) };
+        outer.Controls.Add(tabs);
+        var general = new TabPage("일반") { AutoScroll = true, Padding = new Padding(6) };
+        var dictPage = new TabPage("사용자 사전") { Padding = new Padding(6) };
+        tabs.TabPages.Add(general);
+        tabs.TabPages.Add(dictPage);
+        if (openDict) tabs.SelectedTab = dictPage;
         var root = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
-        Controls.Add(root);
+        general.Controls.Add(root);
 
         root.Controls.Add(Group("사용할 언어 (자동 판정·후보)", Flow(en, ko, ja)));
         root.Controls.Add(Group("일본어 문맥에서 Space", Flow(spaceCommit, spaceContinue)));
@@ -85,15 +100,32 @@ class SettingsForm : Form
         var learnBox = Flow(new Label { Text = "언어 판정·한자 선택·일본어 변환(Mozc) 학습을 모두 지웁니다.", AutoSize = true }, clear);
         root.Controls.Add(Group("학습 기록", learnBox));
 
+        // 사용자 사전: 친 키 → 변환
+        dict.Columns.Add("친 키", 140);
+        dict.Columns.Add("변환", 250);
+        var dAdd = new Button { Text = "추가", AutoSize = true };
+        var dRemove = new Button { Text = "선택 삭제", AutoSize = true };
+        dAdd.Click += (s, e) => AddEntry();
+        dictText.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { AddEntry(); e.SuppressKeyPress = true; } };
+        dRemove.Click += (s, e) => { foreach (ListViewItem it in dict.SelectedItems) dict.Items.Remove(it); };
+        dict.KeyDown += (s, e) => { if (e.KeyCode == Keys.Delete) foreach (ListViewItem it in dict.SelectedItems) dict.Items.Remove(it); };
+        var dictBox = Flow(
+            new Label { Text = "치는 키(로마자, 두벌식 키, 영문)와 그때 나올 변환을 등록합니다.\n후보창 맨 앞 '사전' 묶음에 나오고, 첫 Shift 탭이 그 후보를 고릅니다.", AutoSize = true },
+            dict,
+            Row(new Label { Text = "친 키", AutoSize = true, Anchor = AnchorStyles.Left }, dictKeys,
+                new Label { Text = "변환", AutoSize = true, Anchor = AnchorStyles.Left }, dictText),
+            Row(dAdd, dRemove),
+            new Label { Text = "예: yrsk → よろしくお願いします, gh → GitHub, dlfma → 이름", AutoSize = true, ForeColor = SystemColors.GrayText });
+        dictPage.Controls.Add(dictBox);
+
         var save = new Button { Text = "저장", AutoSize = true, MinimumSize = new Size(80, 0) };
         var close = new Button { Text = "닫기", AutoSize = true, MinimumSize = new Size(80, 0), DialogResult = DialogResult.Cancel };
         save.Click += (s, e) => { if (Save()) Close(); };
         close.Click += (s, e) => Close();
-        AcceptButton = save;
-        CancelButton = close;
-        var path = new Label { Text = FilePath, AutoSize = true, ForeColor = SystemColors.GrayText };
-        root.Controls.Add(path);
-        root.Controls.Add(Row(save, close));
+        CancelButton = close;  // Enter는 입력칸에서 추가로 쓰므로 기본 단추를 두지 않는다
+        var path = new Label { Text = Dir, AutoSize = true, ForeColor = SystemColors.GrayText };
+        outer.Controls.Add(path);
+        outer.Controls.Add(Row(save, close));
 
         LoadSettings();
     }
@@ -118,6 +150,50 @@ class SettingsForm : Form
         var p = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false };
         p.Controls.AddRange(cs);
         return p;
+    }
+
+    void AddEntry()
+    {
+        var k = dictKeys.Text.Trim();
+        var t = dictText.Text;
+        if (k.Length == 0 || t.Length == 0) return;
+        foreach (ListViewItem it in dict.Items)
+            if (string.Equals(it.Text, k, StringComparison.OrdinalIgnoreCase) && it.SubItems[1].Text == t) return;
+        dict.Items.Add(new ListViewItem(new[] { k, t }));
+        dictKeys.Clear();
+        dictText.Clear();
+        dictKeys.Focus();
+    }
+
+    void LoadDict()
+    {
+        try
+        {
+            if (!File.Exists(DictPath)) return;
+            var text = File.ReadAllText(DictPath, Encoding.UTF8).TrimStart('\uFEFF');
+            var list = new JavaScriptSerializer().DeserializeObject(text) as object[];
+            if (list == null) return;
+            foreach (var o in list)
+            {
+                var e = o as Dictionary<string, object>;
+                if (e == null) continue;
+                var k = Get(e, "keys") as string;
+                var t = Get(e, "text") as string;
+                if (!string.IsNullOrEmpty(k) && !string.IsNullOrEmpty(t)) dict.Items.Add(new ListViewItem(new[] { k, t }));
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "사용자 사전을 읽지 못했습니다.\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    static void WriteAtomic(string path, string text)
+    {
+        var tmp = path + ".tmp";
+        File.WriteAllText(tmp, text, new UTF8Encoding(false));
+        if (File.Exists(path)) File.Replace(tmp, path, null);
+        else File.Move(tmp, path);
     }
 
     void AddApp(string name)
@@ -156,6 +232,7 @@ class SettingsForm : Form
         if (list != null)
             foreach (var o in list)
                 if (o is string) apps.Items.Add(o);
+        LoadDict();
     }
 
     static object Get(Dictionary<string, object> d, string k)
@@ -175,11 +252,12 @@ class SettingsForm : Form
         try
         {
             Directory.CreateDirectory(Dir);
-            var json = new JavaScriptSerializer().Serialize(data);
-            var tmp = FilePath + ".tmp";
-            File.WriteAllText(tmp, json, new UTF8Encoding(false));
-            if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
-            else File.Move(tmp, FilePath);
+            var ser = new JavaScriptSerializer();
+            WriteAtomic(FilePath, ser.Serialize(data));
+            var entries = new List<Dictionary<string, object>>();
+            foreach (ListViewItem it in dict.Items)
+                entries.Add(new Dictionary<string, object> { { "keys", it.Text }, { "text", it.SubItems[1].Text } });
+            WriteAtomic(DictPath, ser.Serialize(entries));
             return true;
         }
         catch (Exception ex)

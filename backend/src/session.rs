@@ -40,6 +40,8 @@ const MOZC_RETRY: Duration = Duration::from_secs(30);
 const FULLWIDTH: &str = "全角";
 const HANJA: &str = "漢";
 const SYMBOL: &str = "記号";
+/// 사용자 사전 후보의 표시·묶음 이름
+const DICT: &str = "사전";
 const VK_TAB: u16 = 0x09;
 
 const VK_BACK: u16 = 0x08;
@@ -228,7 +230,7 @@ impl MozcBridge {
         if !mozc_ready(&server) {
             return false;
         }
-        match mozc::Client::connect().and_then(mozc::Session::new) {
+        match mozc::Client::attach(&server).and_then(mozc::Session::new) {
             Ok(s) => {
                 crate::log("mozc: connected");
                 self.session = Some(s);
@@ -484,6 +486,10 @@ fn group_jump(list: &[Choice], sel: usize, forward: bool) -> usize {
 
 /// Shift 탭으로 처음 열 때의 선택: 일본어·기호 묶음이면 다음 후보, 그 밖에는 다음 언어 묶음의 첫 후보.
 fn initial_selection(list: &[Choice]) -> usize {
+    // 사용자 사전에 등록한 변환이 있으면 그것부터
+    if list.first().is_some_and(|c| c.group == DICT) {
+        return 0;
+    }
     if list.len() < 2 {
         return 0;
     }
@@ -603,6 +609,23 @@ fn symbol_choice(sym: &str, text: String, label: String) -> Choice {
         score: 0.0,
     };
     Choice { cand, texts: vec![text], mozc_pick: None, group: label.clone(), label }
+}
+
+/// 사용자 사전 후보. 언어(문맥용)는 변환 글자로 정한다. 구간 언어는 비워 두어 Mozc 확정·학습을 거치지 않는다.
+fn dict_choice(keys: &str, text: String) -> Choice {
+    let lang = if text.chars().any(|c| matches!(c, '\u{3040}'..='\u{30FF}' | '\u{4E00}'..='\u{9FFF}')) {
+        Lang::Ja
+    } else if text.chars().any(|c| matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{3131}'..='\u{318E}')) {
+        Lang::Ko
+    } else {
+        Lang::En
+    };
+    let cand = Candidate {
+        form: vec![(lang, keys.chars().count())],
+        segments: vec![engine::detector::Segment { lang: None, keys: keys.to_string(), text: text.clone() }],
+        score: 0.0,
+    };
+    Choice { cand, texts: vec![text], mozc_pick: None, label: DICT.into(), group: DICT.into() }
 }
 
 /// 일본어 문맥에서 바꿔 넣는 기호.
@@ -1098,6 +1121,10 @@ impl<'m> Session<'m> {
         }
 
         // 영단어 + 일본어로 판정됐으면 그 Mozc 후보 묶음을 먼저
+        // 사용자 사전 (키 전체가 등록된 것)
+        for text in crate::userdict::lookup(keys) {
+            add(&mut out, dict_choice(keys, text));
+        }
         let segs = t.chosen.segments.clone();
         if let [(Lang::En, _), (Lang::Ja, _)] = t.chosen.form.as_slice() {
             let p = parse(&segs[1].keys);
@@ -1360,8 +1387,9 @@ impl<'m> Session<'m> {
             if c.label == HANJA {
                 crate::hanja::learn(&c.cand.segments[0].text, &text);
             }
-            // 학습: 확정한 형태를 기록하고 저장한다
-            if let Ok(mut h) = self.history.lock() {
+            // 학습: 확정한 형태를 기록하고 저장한다 (사전 후보는 판정 학습에 넣지 않는다)
+            if c.label == DICT {
+            } else if let Ok(mut h) = self.history.lock() {
                 h.record(&self.keys, &c.cand.form);
                 if let Some(p) = &self.history_path {
                     let _ = h.save(p);
@@ -1414,6 +1442,25 @@ mod tests {
             };
         }
         r
+    }
+
+    #[test]
+    fn user_dictionary() {
+        let Some(m) = models() else { return };
+        crate::userdict::set_for_test(&[("ghub", "GitHub"), ("yrsk", "よろしくお願いします"), ("yrsk", "宜しく")]);
+        let mut s = session(&m);
+        type_keys(&mut s, "yrsk");
+        let list = s.shift_tap().candidates.expect("window");
+        assert_eq!(list.items[0], "よろしくお願いします");
+        assert_eq!(list.items[1], "宜しく");
+        assert_eq!(list.labels[0], "사전");
+        assert_eq!(list.selected, 0, "첫 Shift 탭이 사전 후보를 고른다");
+        let r = s.key(&key(VK_RETURN, false));
+        assert_eq!(r.commit.as_deref(), Some("よろしくお願いします"));
+        // 대소문자 무시
+        type_keys(&mut s, "GHub");
+        let list = s.shift_tap().candidates.expect("window");
+        assert_eq!(list.items[0], "GitHub");
     }
 
     #[test]

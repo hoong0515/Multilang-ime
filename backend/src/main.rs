@@ -9,6 +9,7 @@ mod hanja;
 mod pipe_security;
 mod session;
 mod settings;
+mod userdict;
 
 use std::ffi::c_void;
 use std::io::Write as _;
@@ -89,9 +90,10 @@ fn debug_delay() -> Option<std::time::Duration> {
     Some(std::time::Duration::from_millis(ms))
 }
 
+/// Mozc: 직접 빌드한 표준 입출력 도우미(mozc_stdio.exe)가 있으면 그것을, 없으면 공식 mozc_server.exe.
 fn mozc_server_path() -> Option<PathBuf> {
-    let p = std::env::current_exe().ok()?.parent()?.join("mozc").join("mozc_server.exe");
-    p.exists().then_some(p)
+    let dir = std::env::current_exe().ok()?.parent()?.join("mozc");
+    ["mozc_stdio.exe", "mozc_server.exe"].iter().map(|n| dir.join(n)).find(|p| p.exists())
 }
 
 fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory) {
@@ -166,6 +168,7 @@ fn main() {
         log(&format!("history entries: {}", h.len()));
     }
     settings::init(data_dir().join("settings.json"));
+    userdict::init(data_dir().join("user_dict.json"));
     // 한자 사전은 시작할 때 백그라운드로 읽는다 (약 30만 항목)
     if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
         let learn = data_dir().join("hanja_learn.json");
