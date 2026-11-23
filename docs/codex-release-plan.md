@@ -16,12 +16,21 @@
 | 설정 화면 | `settings/` WinForms: 사용할 언어, 자동 꺼짐 앱, 학습 지우기, 일본어 Space, 사용자 사전 탭 | c724160, a6f3736 |
 | 표시 | 버전 정보·아이콘, 입력 표시기 아이콘(지금 언어 + 자동/고정), 한/영 키 언어 고정 + 커서 아래 알림 | 7c931a9, 0f31381, 6f3fdaa |
 | CI | `.github/workflows/build.yml` (core / mozc / package). 아직 GitHub에서 한 번도 돌지 않음 | 5e58349 |
+| Codex 리뷰 반영 | 제거는 등록된 설치 폴더에서만(다른 곳의 사본은 아무것도 안 바꿈), Windows 아래·정션 폴더 금지와 정션 경유 쓰기·삭제 차단(`Test-SafeTarget`), 다른 관리자 계정으로 승격 시 사용자별 단계 생략, `-Version` 검증. 정션 시험의 PowerShell 5.1 멈춤 수정 | 7ba925a, 이후 커밋 |
 
 이 PC의 상태: 설치판이 `C:\Program Files\MultilangIME`에 깔려 있다 (한국어 등록, 목록 파일 있음). 남은 DLL 사본 2개는 재부팅 때 지워지게 예약됨. 개발용 자체 서명 인증서("CN=Multilang IME Dev Signing")가 아직 신뢰 목록에 있다 (지금은 쓰이지 않음, 사용자에게 `tools\uiaccess-dev-setup.ps1 -Remove`를 권했음).
 
 ## 2. 남은 일 (순서대로)
 
 각 항목: 할 일 → 끝난 기준 → 확인 방법. **[사용자]** 표시는 사용자의 결정·승인이 먼저 필요한 것.
+
+0. **보안 검토 반영 (출시 전 먼저)** — Codex 정적 검토 `docs/security-review-2026-11-23.md` (실측 안 함, 코드로 먼저 확인할 것)
+   - R1 높음: 백엔드 파이프 요청 크기·동시 연결 무제한 (`backend/src/main.rs` `read_message`, `PIPE_UNLIMITED_INSTANCES`) → 최대 요청 크기, 연결 수 상한, 문자열 필드 길이 제한 + 시험.
+   - R2 중~높음: 입력 용도(비밀번호 등) 확인이 실패하면 IME가 켜진 채로 (fail-open), 여러 용도 중 첫 항목만 봄 (`tip/src/lib.rs` `input_off`) → 하나라도 보호 용도면 끄기, 실패 시 정책 결정 **[사용자]**, 앱별 비밀번호 칸 확인.
+   - R3 중간: 앱 컨테이너도 열 수 있는 파이프로 `ClearLearning`(학습 전부 삭제) 호출 가능 → TIP용 키 처리와 관리 명령 분리(관리 명령은 앱 컨테이너 거부 또는 별도 파이프).
+   - R4 중간: UIAccess 후보창이 `WM_COPYDATA` 발신자를 확인하지 않음 (`candhost/src/main.rs`) → 발신 창/프로세스 확인, 후보 수·문자열 길이 상한.
+   - R5 낮음: 파이프 생성에 원격 클라이언트 거부 플래그(`PIPE_REJECT_REMOTE_CLIENTS`) 없음 → 추가.
+   - 기준: 항목마다 고침 + 시험, 문서의 상태 갱신.
 
 1. **실사용 확인표 만들기**
    - 할 일: 설치판으로 앱별 동작을 표로 기록한다 (`docs/compat-matrix.md` 새로). 앱: 메모장, 워드패드/문자표(옛 입력칸), 카카오톡(32비트, 조합 창), Chrome·Edge·Whale, VS Code, Office(Word), 작업 표시줄 검색창, 관리자 권한 앱, 게임 1개. 항목: 한·영·일 자동 전환, 후보창 위치, Shift 탭, 한/영 고정과 알림, 자동 꺼짐(비밀번호 칸).
@@ -30,7 +39,7 @@
 
 2. **설치·업데이트·제거 끝까지 시험** (관리자 UAC는 사용자가 승인)
    - 할 일: 현재 설치판에서 (a) 같은 판 재설치, (b) 제거(`uninstall.cmd`), (c) 재부팅 뒤 폴더·예약 정리 확인, (d) 새로 설치, (e) `-Language en`/`ja` 설치 후 작업 표시줄·메모장 글꼴 확인 뒤 `ko`로 되돌리기.
-   - 기준: 제거 뒤 `C:\Program Files\MultilangIME`, 등록(HKLM CLSID 64·32, CTF\TIP), 작업, 시작 메뉴, 앱 및 기능, HKCU 프로필 설정이 모두 없고, 재부팅 뒤 `PendingFileRenameOperations`에 우리 경로가 없음. 사용자 데이터(`%LOCALAPPDATA%\multilang-ime`)는 `-RemoveUserData`일 때만 지워짐.
+   - 기준: 제거 뒤 `C:\Program Files\MultilangIME`, 등록(HKLM CLSID 64·32, CTF\TIP — `regsvr32 /u`의 DllUnregisterServer가 TSF API로 지운다), 작업, 시작 메뉴, 앱 및 기능, HKCU 프로필 설정이 모두 없고, 재부팅 뒤 `PendingFileRenameOperations`에 우리 경로가 없음. 사용자 데이터(`%LOCALAPPDATA%\multilang-ime`)는 `-RemoveUserData`일 때만 지워짐.
    - 확인: `tests/installer-files.ps1` (관리자·일반 둘 다), 레지스트리 조회. **[사용자]** 언어 목록이 바뀌는 `-Language en` 시험은 사용자 승인 후.
 
 3. **설치 프로그램 형식 결정과 포장** **[사용자]**
@@ -40,7 +49,7 @@
 
 4. **공개 저장소와 CI 첫 실행** **[사용자]**
    - 할 일: GitHub 공개 저장소 생성·푸시는 사용자가 결정한다. 커밋 작성자 이메일이 공개되니 바꿀지 먼저 묻는다. `data/private`(사용자 트윗)는 절대 올리지 않는다 (`.gitignore`로 제외돼 있음, 푸시 전 `git ls-files`로 확인).
-   - CI: 수동 실행으로 core·mozc·package 세 작업을 돌려 고친다. mozc 작업은 런너에서 오래 걸릴 수 있다(타임아웃 150분, Bazel 디스크 캐시).
+   - CI: 수동 실행(workflow_dispatch)이면 core·mozc·package 세 작업이 모두 돈다 (push·PR은 core만, `v*` 태그는 셋 다). 돌려 보며 고친다. mozc 작업은 런너에서 오래 걸릴 수 있다(타임아웃 150분, Bazel 디스크 캐시).
    - 기준: `release` 아티팩트(zip + sha256)가 나온다.
 
 5. **코드 서명** **[사용자]**

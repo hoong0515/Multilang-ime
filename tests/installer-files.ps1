@@ -161,18 +161,22 @@ public static extern IntPtr LoadLibraryEx(string path, IntPtr file, int flags);
     Check ((Get-Content "$victim\multilang_tip.dll") -eq "precious" -and (Test-Path "$victim\multilang_tip.dll.old123")) "uninstall did not delete through the junction"
     Check (Throws { Install-PackageFiles $pkg $jdest @() @("install.ps1", "install.cmd") }) "install refuses to write through the junction"
     Check ((Get-Content "$victim\multilang_tip.dll") -eq "precious") "victim file unchanged after refused install"
-    Remove-Item "$jdest\x86" -Force   # removes the junction only
+    # PowerShell 5.1 Remove-Item prompts (and hangs) on a junction; rmdir removes the link only, not its target
+    cmd /c rmdir "$jdest\x86"
     $jlink = Join-Path $base "JLink"
     New-Item -ItemType Junction -Path $jlink -Target $victim | Out-Null
     Check (Test-ForbiddenDest $jlink) "install folder that is a junction: forbidden"
-    Remove-Item $jlink -Force
+    cmd /c rmdir "$jlink"
     Check (Test-ForbiddenDest (Join-Path $env:windir "System32\MultilangIME")) "folder under Windows: forbidden"
 
     Write-Host "11. deleting in a forbidden folder is refused"
     Check (Throws { Remove-InstalledFiles $env:windir @("notepad.exe") }) "Remove-InstalledFiles refuses Windows folder"
 }
 finally {
-    Remove-Item $base -Recurse -Force -ErrorAction SilentlyContinue
+    # unlink any junction left by a failed check first, so cleanup never follows a link
+    Get-ChildItem $base -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } | ForEach-Object { cmd /c rmdir "$($_.FullName)" }
+    cmd /c rmdir /s /q "$base"
 }
 Write-Host ""
 if ($script:fails -gt 0) { Write-Host "$($script:fails) check(s) failed"; exit 1 } else { Write-Host "all checks passed" }
