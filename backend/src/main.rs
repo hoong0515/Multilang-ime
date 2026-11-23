@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod hanja;
+mod pipe_security;
 mod session;
 mod settings;
 
@@ -169,6 +170,9 @@ fn main() {
     let name = wide(&ipc::pipe_name(&user));
     log(&format!("started, pipe {}", ipc::pipe_name(&user)));
 
+    // 샌드박스 앱(작업 표시줄 검색창 등) 안의 TIP도 접속할 수 있는 보안 설정
+    let sa = pipe_security::pipe_security();
+    log(if sa.is_some() { "pipe security: user + AppContainer, low integrity" } else { "pipe security: default (AppContainer apps cannot connect)" });
     loop {
         let h = unsafe {
             CreateNamedPipeW(
@@ -179,7 +183,7 @@ fn main() {
                 64 * 1024,
                 64 * 1024,
                 0,
-                None,
+                sa.as_ref().map(|a| a as *const _),
             )
         };
         if h == INVALID_HANDLE_VALUE {

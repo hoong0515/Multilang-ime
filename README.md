@@ -297,6 +297,17 @@ python poc/mozc/run_poc.py
 - 함께 고친 것: 옛 입력칸에서는 Shift에 대해 OnKeyDown 없이 OnTestKeyDown만 불려 Shift 탭이 인식되지 않았다 → OnTestKeyDown에서도 누른 시각을 기록.
 - 실측 (문자표): `dkssud` → 조합 창 `안녕`, Space로 `안녕 ` 확정, `hello`, `go` + Shift 탭 → 후보(go, ｇｏ, 해, 海…, ご) + Tab → 五, `kyouhaiitenki` + Shift 탭 + → → `今日は[いい天気]`. 메모장은 그대로 입력칸 안 조합.
 
+## 샌드박스(AppContainer) 앱 지원: 작업 표시줄 검색창 (2026-11-23)
+
+- 문제: 작업 표시줄 검색창(SearchHost, AppContainer)에서 우리 IME가 불러와지지 않았다.
+- 원인 두 가지:
+  - `deployd` 폴더에 샌드박스 앱 읽기 권한이 없어 TIP DLL을 읽지 못한다.
+  - 백엔드 파이프가 기본 보안으로 만들어져 샌드박스 앱(Low 무결성)이 접속하지 못한다.
+- 수정:
+  - 폴더: `icacls deployd /grant "*S-1-15-2-1:(OI)(CI)(RX)" /grant "*S-1-15-2-2:(OI)(CI)(RX)" /T` (ALL APPLICATION PACKAGES, ALL RESTRICTED APPLICATION PACKAGES). 설치 프로그램에도 넣어야 한다.
+  - 파이프 (`backend/src/pipe_security.rs`): DACL = SYSTEM·이 사용자 전체, AC·LPAC 읽기/쓰기, SACL = 무결성 Low. 샌드박스 앱은 사용자 확인과 샌드박스 확인을 둘 다 통과해야 해 다른 사용자의 앱은 접속할 수 없다. 실제 적용 확인: `D:(A;;FA;;;SY)(A;;FA;;;<user>)(A;;0x12019f;;;AC)(A;;0x12019f;;;S-1-15-2-2)S:AI(ML;;NW;;;LW)`.
+- 일반 앱 접속은 그대로 정상. 검색창에서의 실제 입력은 사용자 확인 필요 (Claude의 화면 조작 권한으로는 셸 검색창에 입력할 수 없음).
+
 ## 알려진 한계
 
 - 한국어 모델은 wordfreq의 형태소 단위 목록이라 어절 패턴이 약하다.
