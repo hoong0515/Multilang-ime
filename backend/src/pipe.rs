@@ -7,7 +7,9 @@
 //!   관리 명령(학습 지우기)을 거부한다. 키 처리는 그대로 받는다 (검색창 같은 샌드박스 앱 안의 TIP).
 
 use std::ffi::c_void;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_MORE_DATA, HANDLE, INVALID_HANDLE_VALUE};
@@ -25,6 +27,10 @@ use windows::Win32::System::Threading::{OpenProcess, OpenProcessToken, PROCESS_Q
 pub const MAX_REQUEST: usize = 16 * 1024;
 /// 동시에 붙어 있을 수 있는 연결 수 (TIP는 앱의 입력 스레드마다 하나씩 붙는다).
 pub const MAX_CONNECTIONS: usize = 128;
+/// 프로세스 하나가 가질 수 있는 연결 수: 보통 앱 (탐색기는 창마다 스레드가 따로라 넉넉히).
+pub const MAX_PER_PROCESS: usize = 64;
+/// 샌드박스(AppContainer)·낮은 무결성 프로세스 하나의 연결 수 (검색창은 몇 개면 된다).
+pub const MAX_PER_UNTRUSTED_PROCESS: usize = 8;
 /// `Hello.app`(실행 파일 이름)의 최대 길이 (글자 수, MAX_PATH).
 pub const MAX_APP_NAME: usize = 260;
 const BUF_SIZE: u32 = 16 * 1024;
@@ -109,6 +115,53 @@ impl Slots {
     }
 }
 
+/// 프로세스별 연결 수 (보안 재검토 2026-11-24 R4: 한 프로세스가 연결을 열어 두기만 해서 전체 상한을 다 차지하지 못하게).
+/// 정상 TIP 연결도 오래 쉬므로 유휴 시간으로 끊지는 않는다.
+pub struct PerProcess {
+    counts: Mutex<HashMap<u32, usize>>,
+}
+
+pub struct ProcessSlot<'a> {
+    owner: &'a PerProcess,
+    pid: u32,
+}
+
+impl Drop for ProcessSlot<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut m) = self.owner.counts.lock() {
+            if let Some(n) = m.get_mut(&self.pid) {
+                *n -= 1;
+                if *n == 0 {
+                    m.remove(&self.pid);
+                }
+            }
+        }
+    }
+}
+
+impl PerProcess {
+    pub fn new() -> Self {
+        Self { counts: Mutex::new(HashMap::new()) }
+    }
+
+    pub fn try_acquire(&self, pid: u32, max: usize) -> Option<ProcessSlot<'_>> {
+        let mut m = self.counts.lock().ok()?;
+        let n = m.entry(pid).or_insert(0);
+        if *n >= max {
+            return None;
+        }
+        *n += 1;
+        Some(ProcessSlot { owner: self, pid })
+    }
+}
+
+/// 파이프 건너편 프로세스 ID.
+pub fn client_pid(h: HANDLE) -> Option<u32> {
+    let mut pid = 0u32;
+    unsafe { GetNamedPipeClientProcessId(h, &mut pid) }.ok()?;
+    Some(pid)
+}
+
 /// `Hello.app`로 받아들일 이름인가: 비어 있지 않고, 너무 길지 않고, 제어 문자·경로 구분자가 없다.
 pub fn valid_app_name(app: &str) -> bool {
     !app.is_empty() && app.chars().count() <= MAX_APP_NAME && !app.chars().any(|c| c.is_control() || c == '\\' || c == '/')
@@ -123,10 +176,9 @@ pub fn may_manage(app_container: bool, integrity_rid: u32) -> bool {
 }
 
 /// 파이프 건너편 프로세스의 (샌드박스 여부, 무결성 RID). 알 수 없으면 None.
+#[cfg(test)]
 pub fn client_identity(h: HANDLE) -> Option<(bool, u32)> {
-    let mut pid = 0u32;
-    unsafe { GetNamedPipeClientProcessId(h, &mut pid) }.ok()?;
-    process_identity(pid)
+    process_identity(client_pid(h)?)
 }
 
 pub fn process_identity(pid: u32) -> Option<(bool, u32)> {
@@ -247,6 +299,19 @@ mod tests {
         assert!(slots.try_acquire().is_none());
         drop((b, c));
         assert_eq!(slots.active(), 0);
+    }
+
+    #[test]
+    fn per_process_limit() {
+        let p = PerProcess::new();
+        let a: Vec<_> = (0..3).map(|_| p.try_acquire(10, 3).expect("under cap")).collect();
+        assert!(p.try_acquire(10, 3).is_none());
+        // 다른 프로세스는 따로 센다
+        let other = p.try_acquire(11, 3).expect("other process");
+        drop(a);
+        assert!(p.try_acquire(10, 3).is_some());
+        drop(other);
+        assert!(p.counts.lock().unwrap().is_empty());
     }
 
     #[test]

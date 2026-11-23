@@ -72,6 +72,7 @@ fn log_throttled(last: &Mutex<Option<std::time::Instant>>, msg: &str) {
 static BAD_REQUEST_LOG: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 static REJECT_LOG: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 static CONNECTIONS: pipe::Slots = pipe::Slots::new(pipe::MAX_CONNECTIONS);
+static PER_PROCESS: std::sync::OnceLock<pipe::PerProcess> = std::sync::OnceLock::new();
 
 fn data_dir() -> PathBuf {
     std::env::var("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("multilang-ime")
@@ -92,12 +93,11 @@ fn mozc_server_path() -> Option<PathBuf> {
 /// 한/영 키 (한국어 키보드의 오른쪽 Alt 자리)
 const VK_HANGUL: u16 = 0x15;
 
-fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory) {
+/// `identity`: 건너편 프로세스의 (샌드박스 여부, 무결성 RID). `may_manage`: 그 기준으로 믿을 수 있는 연결인가.
+fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory, identity: Option<(bool, u32)>, may_manage: bool) {
     let h = HANDLE(h.0 as *mut c_void);
     let mut session = Session::new(models, history, Some(data_dir().join("history.json")), mozc_server_path());
     // 관리 명령(학습 지우기)은 샌드박스가 아닌 보통 무결성 이상 프로세스만 (확인 못 하면 거부)
-    let identity = pipe::client_identity(h);
-    let may_manage = identity.is_some_and(|(ac, rid)| pipe::may_manage(ac, rid));
     // 같은 기준으로 학습도: 샌드박스·낮은 무결성 연결의 확정은 공용 학습(판정·한자·Mozc)에 남기지 않는다
     session.set_learning(may_manage);
     loop {
@@ -212,6 +212,7 @@ fn main() {
     // 샌드박스 앱(작업 표시줄 검색창 등) 안의 TIP도 접속할 수 있는 보안 설정
     let sa = pipe_security::pipe_security();
     log(if sa.is_some() { "pipe security: user + AppContainer, low integrity" } else { "pipe security: default (AppContainer apps cannot connect)" });
+    let per_process = PER_PROCESS.get_or_init(pipe::PerProcess::new);
     loop {
         let Some(h) = pipe::create(&name, sa.as_ref()) else {
             log("CreateNamedPipeW failed");
@@ -235,11 +236,24 @@ fn main() {
             }
             continue;
         };
+        // 프로세스별 상한: 샌드박스·낮은 무결성(또는 확인 실패)은 더 적게
+        let pid = pipe::client_pid(h).unwrap_or(0);
+        let identity = if pid != 0 { pipe::process_identity(pid) } else { None };
+        let may_manage = identity.is_some_and(|(ac, rid)| pipe::may_manage(ac, rid));
+        let cap = if may_manage { pipe::MAX_PER_PROCESS } else { pipe::MAX_PER_UNTRUSTED_PROCESS };
+        let Some(proc_slot) = per_process.try_acquire(pid, cap) else {
+            log_throttled(&REJECT_LOG, &format!("too many connections from process {pid} (max {cap}): rejected"));
+            unsafe {
+                let _ = DisconnectNamedPipe(h);
+                let _ = CloseHandle(h);
+            }
+            continue;
+        };
         let ph = PipeHandle(h.0 as isize);
         let hist = history.clone();
         std::thread::spawn(move || {
-            let _slot = slot;
-            handle_client(ph, models, hist)
+            let _slots = (slot, proc_slot);
+            handle_client(ph, models, hist, identity, may_manage)
         });
     }
 }
