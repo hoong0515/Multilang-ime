@@ -1,6 +1,6 @@
 # 개발 세션 정리 (2026-11-22 ~ 11-23)
 
-한·영·일 자동 전환 IME를 기획부터 Windows에서 실제로 쓰는 수준까지 만든 세션의 요약. 세부 측정·경위는 `README.md`, 남은 일은 `docs/next-tasks.md`, 설계는 `docs/v1-tsf-frontend.md`.
+한·영·일 자동 전환 IME를 기획부터 Windows에서 실제로 쓰는 수준까지 만든 세션의 요약. 세부 측정·경위는 `docs/development-log.md`, 남은 일은 `docs/next-tasks.md`, 설계는 `docs/v1-tsf-frontend.md`.
 
 ## 1. 기획과 방향 (사용자 결정)
 

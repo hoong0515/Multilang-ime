@@ -43,6 +43,12 @@ powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.
 설치판과 개발판은 같은 CLSID·작업 이름을 쓴다. 설치하면 등록과 작업이 Program Files 쪽으로 바뀐다.
 개발판으로 돌아가려면 관리자 권한으로 `regsvr32 deploy\x64\multilang_tip.dll`, `tools\backend-task.ps1 install`.
 
+## 파일 정보와 앱 목록
+
+- 버전 정보와 아이콘: `res/build_res.rs`(tip·backend·candhost의 build.rs가 include, embed-resource로 rc.exe)가 VERSIONINFO(제품 이름, 버전 = Cargo 버전, GPL-3.0)와 `res/multilang.ico`(가·あ, `tools/make-icon.py`로 생성)를 넣는다. TIP의 아이콘 1번 = 입력 표시기 아이콘. 설정 화면은 csc `/win32icon` + 어셈블리 특성.
+- 입력기 이름은 "Multilang IME" (개발판 등록에 남은 "(dev)"는 다시 등록할 때 바뀐다).
+- 설치 스크립트가 "앱 및 기능"(Uninstall 키)에 등록하고, 제거 스크립트가 지운다.
+
 ## 아직 남은 것
 
 - **코드 서명**: 서명 안 된 DLL·exe는 SmartScreen 경고, 일부 보안 제품 차단. 인증서가 필요하다 (무료 오픈소스는 SignPath Foundation 등 검토).

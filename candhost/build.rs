@@ -1,7 +1,10 @@
+include!("../res/build_res.rs");
+
 // The candidate host runs with UIAccess so its topmost window can sit above the shell's search UI
 // (a higher window band than normal apps). Windows only grants UIAccess to a signed exe installed in a
 // secure location (Program Files), started through ShellExecute.
 fn main() {
+    embed_version_resource("Multilang IME candidate window", "MultilangIME-CandWin.exe", false, true);
     // shared drawing code (tip/src/candwin.rs) is compiled here without the host routing
     println!("cargo::rustc-check-cfg=cfg(candhost)");
     println!("cargo::rustc-cfg=candhost");

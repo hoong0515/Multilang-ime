@@ -103,6 +103,25 @@ if (-not $NoLanguageList) {
     }
 }
 
+# 8. Programs and Features (Settings > Apps) entry, so it can be removed like any other app
+Step "Programs and Features entry" {
+    $key = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MultilangIME"
+    $version = (Get-Item (Join-Path $Dest "multilang_tip.dll")).VersionInfo.ProductVersion
+    $sizeKb = [int]((Get-ChildItem $Dest -Recurse -File | Measure-Object Length -Sum).Sum / 1KB)
+    New-Item -Path $key -Force | Out-Null
+    $values = @{
+        DisplayName     = "Multilang IME"
+        DisplayVersion  = $version
+        Publisher       = "Multilang IME contributors"
+        InstallLocation = $Dest
+        DisplayIcon     = (Join-Path $Dest "MultilangIME-Settings.exe")
+        UninstallString = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $Dest 'uninstall.ps1')`""
+    }
+    foreach ($k in $values.Keys) { New-ItemProperty -Path $key -Name $k -Value $values[$k] -PropertyType String -Force | Out-Null }
+    foreach ($k in "NoModify", "NoRepair") { New-ItemProperty -Path $key -Name $k -Value 1 -PropertyType DWord -Force | Out-Null }
+    New-ItemProperty -Path $key -Name EstimatedSize -Value $sizeKb -PropertyType DWord -Force | Out-Null
+}
+
 Write-Host ""
 Write-Host "Installed to $Dest. Apps that were already running need a restart to use the IME."
 Write-Host "Tip: for Japanese text in Notepad, use a font with both Korean and Japanese glyphs (e.g. Noto Sans KR)."

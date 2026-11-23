@@ -6,6 +6,6 @@ $out = Join-Path $Root "target\settings"
 New-Item -ItemType Directory -Force $out | Out-Null
 & $csc /nologo /codepage:65001 /target:winexe /optimize+ /platform:anycpu `
     /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Core.dll `
-    /out:"$out\MultilangIME-Settings.exe" "$PSScriptRoot\Settings.cs"
+    /win32icon:"$Root\res\multilang.ico" /out:"$out\MultilangIME-Settings.exe" "$PSScriptRoot\Settings.cs"
 if ($LASTEXITCODE) { throw "csc failed" }
 "built: $out\MultilangIME-Settings.exe"

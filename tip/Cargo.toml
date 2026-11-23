@@ -16,3 +16,6 @@ windows-core = "0.62"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(candhost)"] }
+
+[build-dependencies]
+embed-resource = "3"

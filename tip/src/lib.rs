@@ -53,7 +53,7 @@ const PROFILE_KO: GUID = GUID::from_u128(0x6e9dbd5f_4a03_40fa_8186_35dedf98e150)
 const PROFILE_JA: GUID = GUID::from_u128(0xb21cf121_71fb_4c56_8b91_3bae60cb6e74);
 const LANG_KO: u16 = 0x0412;
 const LANG_JA: u16 = 0x0411;
-const DESCRIPTION: &str = "Multilang IME (dev)";
+const DESCRIPTION: &str = "Multilang IME";
 
 static DLL_MODULE: AtomicIsize = AtomicIsize::new(0);
 
