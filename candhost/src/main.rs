@@ -5,6 +5,11 @@
 //! (tip/src/candwin.rs) for the TIP, which sends WM_COPYDATA with a JSON command:
 //! `{"op":"show","list":{..},"header":null,"anchor":[l,t,r,b]}` or `{"op":"hide"}`.
 //! Started by the backend (ShellExecute). One per user session.
+//!
+//! This process has UIAccess, so any process on the desktop that can send it a message could draw over
+//! other windows with it (security review R4). Window messages carry no trustworthy sender, so `show` is
+//! only honoured while the foreground window belongs to one of the shell processes the TIP uses this host
+//! for (tip/src/host.rs SHELL_HOSTS), and message size, candidate count and string lengths are capped.
 
 #![windows_subsystem = "windows"]
 
@@ -13,8 +18,9 @@ mod candwin;
 
 use serde::Deserialize;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
+use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -23,6 +29,14 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 const HOST_CLASS: PCWSTR = w!("MultilangImeCandidateHost");
 /// WM_COPYDATA tag ("MLCW").
 const COPYDATA_TAG: usize = 0x4D4C_4357;
+/// Largest accepted WM_COPYDATA body (a page of candidates is a few KiB).
+const MAX_MESSAGE: u32 = 64 * 1024;
+/// Candidate rows per page (the backend sends one page of 9).
+const MAX_ITEMS: usize = 32;
+/// Longest candidate, label or composition text (UTF-16 units are not counted; chars are).
+const MAX_TEXT: usize = 1024;
+/// Shell processes whose foreground windows the TIP draws for (keep in sync with tip/src/host.rs, lower case).
+const SHELL_HOSTS: [&str; 4] = ["searchhost.exe", "searchapp.exe", "startmenuexperiencehost.exe", "shellexperiencehost.exe"];
 
 pub(crate) fn debug_note(_what: &str) {}
 
@@ -41,7 +55,48 @@ struct Command {
     anchor: [i32; 4],
 }
 
+/// Does a command stay within the caps?
+fn within_limits(cmd: &Command) -> bool {
+    let short = |s: &String| s.chars().count() <= MAX_TEXT;
+    cmd.op.len() <= 16
+        && cmd.header.as_ref().is_none_or(short)
+        && cmd.list.as_ref().is_none_or(|l| {
+            l.items.len() <= MAX_ITEMS && l.labels.len() <= MAX_ITEMS && l.items.iter().chain(&l.labels).all(short)
+        })
+}
+
+/// Lower-case file name of an executable path.
+fn exe_name(path: &str) -> String {
+    path.rsplit(['\\', '/']).next().unwrap_or("").to_lowercase()
+}
+
+/// Is the foreground window one of the shell hosts?
+fn shell_in_foreground() -> bool {
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.0.is_null() {
+        return false;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(fg, Some(&mut pid)) };
+    if pid == 0 {
+        return false;
+    }
+    let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else { return false };
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    let ok = unsafe { QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len) }.is_ok();
+    unsafe {
+        let _ = CloseHandle(process);
+    }
+    ok && SHELL_HOSTS.contains(&exe_name(&String::from_utf16_lossy(&buf[..len as usize])).as_str())
+}
+
 fn handle(cmd: Command) {
+    // hide is always allowed; show only for the shell in the foreground and within the caps
+    if cmd.op == "show" && !(within_limits(&cmd) && shell_in_foreground()) {
+        candwin::hide();
+        return;
+    }
     let anchor = RECT { left: cmd.anchor[0], top: cmd.anchor[1], right: cmd.anchor[2], bottom: cmd.anchor[3] };
     match (cmd.op.as_str(), cmd.header) {
         ("show", Some(h)) => candwin::show_floating(&h, cmd.list.as_ref(), anchor),
@@ -56,7 +111,7 @@ fn handle(cmd: Command) {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_COPYDATA && lparam.0 != 0 {
         let cds = unsafe { &*(lparam.0 as *const COPYDATASTRUCT) };
-        if cds.dwData == COPYDATA_TAG && !cds.lpData.is_null() && cds.cbData < (1 << 20) {
+        if cds.dwData == COPYDATA_TAG && !cds.lpData.is_null() && cds.cbData <= MAX_MESSAGE {
             let bytes = unsafe { std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize) };
             if let Ok(cmd) = serde_json::from_slice::<Command>(bytes) {
                 handle(cmd);
@@ -103,5 +158,42 @@ fn main() {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(json: &str) -> Command {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn limits() {
+        assert!(within_limits(&parse(r#"{"op":"hide"}"#)));
+        let page = serde_json::json!({"op":"show","list":{"items":vec!["候補"; 9],"labels":vec!["ja"; 9],"selected":0},"anchor":[0,0,1,1]});
+        assert!(within_limits(&parse(&page.to_string())));
+        let many = serde_json::json!({"op":"show","list":{"items":vec!["a"; MAX_ITEMS + 1],"labels":[],"selected":0}});
+        assert!(!within_limits(&parse(&many.to_string())));
+        let long = serde_json::json!({"op":"show","list":{"items":["a".repeat(MAX_TEXT + 1)],"labels":[],"selected":0}});
+        assert!(!within_limits(&parse(&long.to_string())));
+        let header = serde_json::json!({"op":"show","header":"가".repeat(MAX_TEXT + 1)});
+        assert!(!within_limits(&parse(&header.to_string())));
+        let header_ok = serde_json::json!({"op":"show","header":"가".repeat(MAX_TEXT)});
+        assert!(within_limits(&parse(&header_ok.to_string())));
+    }
+
+    #[test]
+    fn exe_names() {
+        assert_eq!(exe_name(r"C:\Windows\SystemApps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\SearchHost.exe"), "searchhost.exe");
+        assert_eq!(exe_name("notepad.exe"), "notepad.exe");
+        assert!(!SHELL_HOSTS.contains(&exe_name(r"C:\evil\searchhost.exe.bat").as_str()));
+    }
+
+    #[test]
+    fn this_test_process_is_not_shell() {
+        // the test runner is never a shell host, so show would be refused even if it were in the foreground
+        assert!(!SHELL_HOSTS.contains(&exe_name(&std::env::current_exe().unwrap().to_string_lossy()).as_str()));
     }
 }
