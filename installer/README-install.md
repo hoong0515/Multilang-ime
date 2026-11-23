@@ -1,0 +1,57 @@
+# Multilang IME (한·영·일 자동 전환 입력기)
+
+전환 키 없이 한국어·영어·일본어를 섞어 칠 수 있는 Windows 입력기입니다. 일본어 변환은 Mozc를 씁니다.
+GPL-3.0-or-later 자유 소프트웨어입니다 (`LICENSE.txt`, 제3자 구성 요소는 `THIRD-PARTY-NOTICES.md`).
+
+## 설치
+
+1. 압축을 풉니다.
+2. `install.cmd`를 실행하고 관리자 권한 요청(UAC)을 허용합니다.
+   - `C:\Program Files\MultilangIME`에 복사하고, 64비트·32비트 입력기를 등록합니다.
+   - 로그온 때 백엔드를 띄우는 작업 스케줄러 작업("MultilangIME Backend")을 만듭니다.
+   - 지금 사용자의 한국어 입력 방법 목록에 "Multilang IME"를 추가합니다.
+3. 이미 열려 있던 앱은 다시 열어야 입력기가 적용됩니다.
+
+입력 방법은 작업 표시줄의 언어 표시(또는 Win+Space)에서 고릅니다.
+
+## 기본 키
+
+| 키 | 동작 |
+| --- | --- |
+| 그냥 치기 | 언어를 자동으로 판정해 조합 (일본어는 로마자 입력 → 변환 결과 표시) |
+| Space / Enter | 확정 |
+| 왼쪽 Shift 탭 | 변환 후보창 열기 / 다음 후보 |
+| 숫자 1~5, ↑↓ | 후보 고르기 |
+| Tab / Shift+Tab | 후보 언어 묶음 이동 (영어 / 한국어·한자 / 일본어) |
+| ← / → | 긴 입력의 부분(문절) 이동 |
+| Backspace | 후보창이 열려 있으면 친 키 그대로, 아니면 키 하나 지우기 |
+| Esc | 조합 취소 |
+| Shift+Space | 전각 공백 |
+
+## 설정
+
+`%LOCALAPPDATA%\multilang-ime\settings.json` (없으면 새로 만듭니다):
+
+```json
+{ "ja_space": "continue" }
+```
+
+- `ja_space`: 일본어 문맥의 Space. 기본(`commit`)은 확정 + 전각 공백, `continue`는 확정하지 않고 이어서 변환.
+
+학습 기록은 같은 폴더의 `history.json`, `hanja_learn.json`입니다. 지우면 처음 상태로 돌아갑니다.
+
+## 알아 둘 점
+
+- 메모장 등에서 일본어 글자(気, ー 등)가 네모로 보이면 한·일 글자가 모두 있는 글꼴(Noto Sans KR, 본고딕 등)을 쓰세요.
+- 비밀번호·숫자·이메일·URL 입력칸에서는 자동으로 꺼집니다.
+- 작업 표시줄 검색창에서는 입력은 되지만 후보창이 보이지 않습니다 (다음 판에서 해결 예정).
+
+## 제거
+
+설치 폴더(`C:\Program Files\MultilangIME`)의 `uninstall.cmd`를 실행합니다. 설정·학습 기록까지 지우려면:
+
+```
+uninstall.cmd -RemoveUserData
+```
+
+등록을 푼 뒤 쓰던 앱을 닫거나 재부팅하고 설치 폴더를 지웁니다.

@@ -9,3 +9,4 @@ target/
 deploy/
 data/engine_model.json
 data/parity_koen.jsonl
+dist/

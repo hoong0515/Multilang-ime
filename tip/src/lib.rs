@@ -1142,11 +1142,13 @@ fn unregister_com_class() {
     }
 }
 
-const CATEGORIES: [GUID; 4] = [
+const CATEGORIES: [GUID; 5] = [
     GUID_TFCAT_TIP_KEYBOARD,
     GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
     GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
     GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+    // 후보 목록을 UI 요소(ITfCandidateListUIElement)로 알린다 (UI-less 앱·전체 화면 게임용)
+    GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
 ];
 
 fn register_tsf() -> Result<()> {

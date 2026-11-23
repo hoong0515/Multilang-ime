@@ -77,7 +77,7 @@ impl Client {
         Some(h)
     }
 
-    /// DLL과 같은 폴더의 backend.exe를 띄운다.
+    /// DLL과 같은 폴더의 backend.exe를 띄운다 (32비트 DLL은 x86 하위 폴더에 있으므로 없으면 한 단계 위 폴더).
     fn spawn_backend(&mut self) {
         if self.last_spawn.is_some_and(|t| t.elapsed() < RESPAWN_INTERVAL) {
             return;
@@ -85,7 +85,13 @@ impl Client {
         self.last_spawn = Some(Instant::now());
         let dll = crate::module_path();
         let dll = String::from_utf16_lossy(&dll);
-        let Some(dir) = std::path::Path::new(&dll).parent() else { return };
+        let Some(mut dir) = std::path::Path::new(&dll).parent() else { return };
+        if !dir.join("backend.exe").exists() {
+            match dir.parent() {
+                Some(up) if up.join("backend.exe").exists() => dir = up,
+                _ => return,
+            }
+        }
         let exe = dir.join("backend.exe");
         let exe_w = wide(&exe.to_string_lossy());
         let dir_w = wide(&dir.to_string_lossy());
