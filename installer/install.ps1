@@ -42,29 +42,28 @@ if (-not ((Test-Path (Join-Path $Src "mozc\mozc_stdio.exe")) -or (Test-Path (Joi
     throw "missing in package: mozc\mozc_stdio.exe (or mozc_server.exe)"
 }
 
-# 1. Stop the running backend and Mozc started from an older install in $Dest
+# --- Safety (installer\files.ps1): only a folder of our own, and inside it only the files we installed.
+. (Join-Path $Src "files.ps1")
+$Dest = Get-FullDir $Dest
+$registered = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MultilangIME" -ErrorAction SilentlyContinue).InstallLocation
+$previous = Get-PreviousInstall $Dest $registered   # throws when $Dest is not ours
+$script:booked = @()
+
+# 1. Stop our processes running from $Dest (exact folder, not a prefix of another one)
 Step "stop old backend" {
     Get-Process backend, mozc_server, mozc_stdio, MultilangIME-CandWin -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.StartsWith($Dest, [StringComparison]::OrdinalIgnoreCase) } |
+        Where-Object { $_.Path -and $_.Path.StartsWith("$Dest\", [StringComparison]::OrdinalIgnoreCase) } |
         Stop-Process -Force
 }
 
-# 2. Copy files. A DLL still loaded by a running app cannot be overwritten, but it can be
-#    renamed; the old copy is deleted at the next install or reboot.
+# 2. Copy files (a DLL still loaded by an app is renamed and deleted at the next reboot); writes the manifest
 Step "copy files to $Dest" {
-    New-Item -ItemType Directory -Force $Dest | Out-Null
-    foreach ($dll in @("multilang_tip.dll", "x86\multilang_tip.dll")) {
-        $p = Join-Path $Dest $dll
-        Get-ChildItem "$p.old*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-        if (Test-Path $p) {
-            try { Remove-Item $p -Force } catch { Rename-Item $p ("$p.old" + [DateTime]::Now.Ticks) }
-        }
-    }
-    Get-ChildItem $Src -Exclude "install.ps1", "install.cmd" | Copy-Item -Destination $Dest -Recurse -Force
+    $script:booked = Install-PackageFiles $Src $Dest $previous @("install.ps1", "install.cmd")
 }
 
 # 3. Sandboxed apps (taskbar search, Store apps) load the DLL and read the data files:
-#    give ALL APPLICATION PACKAGES and ALL RESTRICTED APPLICATION PACKAGES read access.
+#    give ALL APPLICATION PACKAGES and ALL RESTRICTED APPLICATION PACKAGES read access
+#    (inherited by the files in this folder, which is ours alone: see the safety check above).
 Step "grant read access to app containers" {
     icacls $Dest /grant "*S-1-15-2-1:(OI)(CI)(RX)" /grant "*S-1-15-2-2:(OI)(CI)(RX)" /T /Q | Out-Null
 }
@@ -147,4 +146,5 @@ Step "Programs and Features entry" {
 
 Write-Host ""
 Write-Host "Installed to $Dest. Apps that were already running need a restart to use the IME."
+if ($script:booked.Count -gt 0) { Write-Host "$($script:booked.Count) old file(s) still in use will be deleted at the next reboot." }
 Write-Host "Tip: for Japanese text in Notepad, use a font with both Korean and Japanese glyphs (e.g. Noto Sans KR)."

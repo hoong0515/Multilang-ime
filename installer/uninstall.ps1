@@ -3,9 +3,16 @@
 # -RemoveUserData also deletes %LOCALAPPDATA%\multilang-ime (settings and learning) of the current user.
 param([switch]$RemoveUserData, [switch]$DryRun)
 $ErrorActionPreference = "Stop"
-$Dest = $PSScriptRoot
+$Dest = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $TaskName = "MultilangIME Backend"
 $Clsid = "{05C49E35-3B3F-4BC3-8D48-EF1336F9CD4D}"
+# the registered install folder (read before the Programs and Features entry is removed below);
+# used only for an install made before install-manifest.txt existed, and only with our files present
+$reg = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MultilangIME" -ErrorAction SilentlyContinue).InstallLocation
+$script:registeredDest = $null
+if ($reg -and (Test-Path (Join-Path $PSScriptRoot "backend.exe")) -and (Test-Path (Join-Path $PSScriptRoot "engine_model.json"))) {
+    $script:registeredDest = [IO.Path]::GetFullPath($reg).TrimEnd('\')
+}
 
 function Step($msg, [scriptblock]$do) {
     Write-Host "- $msg"
@@ -39,7 +46,7 @@ Step "remove scheduled task" {
 }
 Step "stop backend and Mozc" {
     Get-Process backend, mozc_server, mozc_stdio, MultilangIME-CandWin -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.StartsWith($Dest, [StringComparison]::OrdinalIgnoreCase) } |
+        Where-Object { $_.Path -and $_.Path.StartsWith("$Dest\", [StringComparison]::OrdinalIgnoreCase) } |
         Stop-Process -Force
 }
 Step "unregister TIP" {
@@ -51,5 +58,37 @@ if ($RemoveUserData) {
         Remove-Item "$env:LOCALAPPDATA\multilang-ime" -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+Step "remove per-user profile settings" {
+    Remove-Item "HKCU:\Software\Microsoft\CTF\TIP\$Clsid" -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --- Delete only what the installer put here (installer\files.ps1): the files in install-manifest.txt and
+# their <name>.old<digits> copies. Nothing else in this folder (or anywhere else) is touched; folders go only
+# when empty; files still loaded by apps are deleted at the next reboot.
+. (Join-Path $PSScriptRoot "files.ps1")
+$Manifest = Join-Path $Dest $ManifestName
+$list = @()
+if (Test-Path -LiteralPath $Manifest) {
+    $list = @(Get-Content -LiteralPath $Manifest | Where-Object { Test-RelPath $_ })
+} elseif ($script:registeredDest -and ($script:registeredDest -eq $Dest)) {
+    $list = $Legacy010
+}
+$script:later = @()
+if ($list.Count -gt 0 -and -not (Test-ForbiddenDest $Dest)) {
+    Step "delete the installed files in $Dest" {
+        $script:later = Remove-InstalledFiles $Dest $list
+    }
+}
 Write-Host ""
-Write-Host "Unregistered. Delete the folder $Dest after restarting apps (or after a reboot) if files are still in use."
+if ($list.Count -eq 0) {
+    Write-Host "Unregistered. No install manifest in $Dest, so no files were deleted."
+} elseif ($script:later.Count -gt 0) {
+    Write-Host "Removed. $($script:later.Count) file(s) still in use by running apps will be deleted at the next reboot."
+} else {
+    Write-Host "Removed."
+}
+if ((Test-Path -LiteralPath $Dest) -and $script:later.Count -eq 0 -and -not $DryRun) {
+    $rest = @(Get-ChildItem -LiteralPath $Dest -Force -Recurse -File)
+    if ($rest.Count -gt 0) { Write-Host "Left in place (not installed by Multilang IME): $($rest.Count) file(s) in $Dest" }
+}

@@ -57,7 +57,7 @@ Put "LICENSE" "LICENSE.txt"
 Put "THIRD-PARTY-NOTICES.md" "THIRD-PARTY-NOTICES.md"
 Put "mozc\proto\LICENSE-mozc" "licenses\mozc-LICENSE.txt"
 Put "installer\README-install.md" "README.md"
-foreach ($f in "install.ps1", "install.cmd", "uninstall.ps1", "uninstall.cmd") { Put "installer\$f" $f }
+foreach ($f in "install.ps1", "install.cmd", "uninstall.ps1", "uninstall.cmd", "files.ps1") { Put "installer\$f" $f }
 
 $Zip = Join-Path $Root "dist\$Name-win.zip"
 if (Test-Path $Zip) { Remove-Item $Zip -Force }
