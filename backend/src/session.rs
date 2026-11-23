@@ -40,6 +40,58 @@ const MOZC_RETRY: Duration = Duration::from_secs(30);
 const FULLWIDTH: &str = "全角";
 const HANJA: &str = "漢";
 const SYMBOL: &str = "記号";
+/// 가나 후보 표시 (후보창 일본어 묶음 맨 앞)
+const HIRAGANA: &str = "ひらがな";
+const KATAKANA: &str = "カタカナ";
+const HALF_KANA: &str = "半角カナ";
+
+fn is_kana_label(l: &str) -> bool {
+    l == HIRAGANA || l == KATAKANA || l == HALF_KANA
+}
+
+/// 히라가나 → 가타카나 (그 밖의 글자는 그대로).
+fn to_katakana(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{3041}'..='\u{3096}' | '\u{309D}' | '\u{309E}' => char::from_u32(c as u32 + 0x60).unwrap_or(c),
+            _ => c,
+        })
+        .collect()
+}
+
+/// 가타카나 → 반각 가타카나 (탁점·반탁점은 따로 붙인다).
+fn to_halfwidth_katakana(s: &str) -> String {
+    const BASE: &str = "ｧｱｨｲｩｳｪｴｫｵｶｶｷｷｸｸｹｹｺｺｻｻｼｼｽｽｾｾｿｿﾀﾀﾁﾁｯﾂﾂﾃﾃﾄﾄﾅﾆﾇﾈﾉﾊﾊﾊﾋﾋﾋﾌﾌﾌﾍﾍﾍﾎﾎﾎﾏﾐﾑﾒﾓｬﾔｭﾕｮﾖﾗﾘﾙﾚﾛﾜﾜｲｴｦﾝｳｶｹ";
+    // ァ(30A1)..ヶ(30F6) 각 글자의 반각 + 탁점(1)/반탁점(2)
+    const MARK: &str = "00000000000101010101010101010101010010101000000120120120120120000000000000000000000100";
+    let base: Vec<char> = BASE.chars().collect();
+    let mark: Vec<u8> = MARK.bytes().collect();
+    let mut out = String::new();
+    for c in s.chars() {
+        let i = (c as u32).wrapping_sub(0x30A1) as usize;
+        match c {
+            '\u{30A1}'..='\u{30F6}' if i < base.len() => {
+                out.push(base[i]);
+                match mark.get(i) {
+                    Some(b'1') => out.push('ﾞ'),
+                    Some(b'2') => out.push('ﾟ'),
+                    _ => {}
+                }
+            }
+            'ー' => out.push('ｰ'),
+            '・' => out.push('･'),
+            '。' => out.push('｡'),
+            '、' => out.push('､'),
+            '「' => out.push('｢'),
+            '」' => out.push('｣'),
+            '\u{30F7}' => out.push_str("ﾜﾞ"),
+            '\u{30FA}' => out.push_str("ｦﾞ"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// 사용자 사전 후보의 표시·묶음 이름
 const DICT: &str = "사전";
 const VK_TAB: u16 = 0x09;
@@ -1040,7 +1092,12 @@ impl<'m> Session<'m> {
                 if list.is_empty() {
                     return self.respond();
                 }
-                let sel = initial_selection(&list);
+                let mut sel = initial_selection(&list);
+                if list[0].group == "ja" {
+                    // 일본어: 맨 앞(가나)부터, 지금 보이는 것과 같으면 다음
+                    let shown = self.current().map(|x| x.0.text()).unwrap_or_default();
+                    sel = list.iter().position(|c| c.text() != shown).unwrap_or(0);
+                }
                 self.raw = false;
                 self.pinned = None;
                 self.open = Some((list, sel));
@@ -1155,7 +1212,20 @@ impl<'m> Session<'m> {
                     let p = parse(&keys);
                     let mut any = false;
                     if p.leftover == 0 {
-                        if let Some(conv) = self.mozc.conversion_ctx(&p.kana, &keys, after_noun_ja) {
+                        let conv = self.mozc.conversion_ctx(&p.kana, &keys, after_noun_ja);
+                        // 가나 후보를 일본어 묶음 맨 앞에: 히라가나, 가타카나, 반각 가타카나 (Mozc가 아직 없어도).
+                        // 한 문절이고 Mozc 후보에 같은 글자가 있으면 그 id로 확정(학습), 없으면 Mozc를 거치지 않는다.
+                        let kata = to_katakana(&p.kana);
+                        for (text, label) in [(p.kana.clone(), HIRAGANA), (kata.clone(), KATAKANA), (to_halfwidth_katakana(&kata), HALF_KANA)] {
+                            let pick = conv
+                                .as_ref()
+                                .filter(|cv| cv.segments.len() == 1)
+                                .and_then(|cv| cv.candidates.iter().find(|(_, v)| *v == text).map(|(id, _)| *id));
+                            let ch = Choice { cand: c.clone(), texts: vec![text], mozc_pick: pick, label: label.into(), group: "ja".into() };
+                            add(&mut out, ch);
+                            any = true;
+                        }
+                        if let Some(conv) = conv {
                             let rest: String = conv.segments.iter().skip(1).cloned().collect();
                             for (id, v) in conv.candidates.iter().take(MAX_JA) {
                                 any = true;
@@ -1334,7 +1404,7 @@ impl<'m> Session<'m> {
             for p in &ps.parts {
                 let ch = &p.choices[p.sel];
                 let t = ch.text();
-                if ch.group == "ja" && ch.cand.form.len() == 1 && ch.cand.start() == Lang::Ja {
+                if ch.group == "ja" && ch.cand.form.len() == 1 && ch.cand.start() == Lang::Ja && !(is_kana_label(&ch.label) && ch.mozc_pick.is_none()) {
                     let kp = parse(&p.keys);
                     if kp.leftover == 0 {
                         let _ = self.mozc.commit_ctx(&kp.kana, &p.keys, ch.mozc_pick, p.after_noun);
@@ -1370,7 +1440,7 @@ impl<'m> Session<'m> {
             // 일본어 구간은 Mozc로 확정 (학습). 전각 후보는 그대로.
             text = String::new();
             for (i, (s, shown)) in c.cand.segments.iter().zip(c.texts.iter()).enumerate() {
-                if s.lang == Some(Lang::Ja) && c.label != FULLWIDTH {
+                if s.lang == Some(Lang::Ja) && c.label != FULLWIDTH && !(is_kana_label(&c.label) && c.mozc_pick.is_none()) {
                     let p = parse(&s.keys);
                     let after_noun = i > 0 && c.cand.segments[i - 1].lang == Some(Lang::En);
                     let committed =
@@ -1442,6 +1512,34 @@ mod tests {
             };
         }
         r
+    }
+
+    #[test]
+    fn kana_conversions() {
+        assert_eq!(to_katakana("きゃっと〜ー"), "キャット〜ー");
+        assert_eq!(to_halfwidth_katakana("ガッコウ"), "ｶﾞｯｺｳ");
+        assert_eq!(to_halfwidth_katakana("パーティー"), "ﾊﾟｰﾃｨｰ");
+        assert_eq!(to_halfwidth_katakana("ヴァイオリン"), "ｳﾞｧｲｵﾘﾝ");
+        assert_eq!(to_halfwidth_katakana("ヲンヮ"), "ｦﾝﾜ");
+        assert_eq!(to_halfwidth_katakana("ポケモン"), "ﾎﾟｹﾓﾝ");
+        assert_eq!(to_halfwidth_katakana("ジュース"), "ｼﾞｭｰｽ");
+        assert_eq!(to_halfwidth_katakana("ヅヂブベ"), "ﾂﾞﾁﾞﾌﾞﾍﾞ");
+    }
+
+    #[test]
+    fn kana_candidates_first() {
+        let Some(m) = models() else { return };
+        let mut s = session(&m);
+        type_keys(&mut s, "arigatou");
+        let list = s.shift_tap().candidates.expect("window");
+        let i = list.items.iter().position(|t| t == "ありがとう").expect("hiragana");
+        assert_eq!(list.items[i + 1], "アリガトウ");
+        assert_eq!(list.items[i + 2], "ｱﾘｶﾞﾄｳ");
+        assert_eq!(list.labels[i], "ひらがな");
+        // Mozc 없이 보이는 것은 ありがとう이므로 첫 Shift 탭은 가타카나
+        assert_eq!(list.items[list.selected], "アリガトウ");
+        let r = s.key(&key(VK_RETURN, false));
+        assert_eq!(r.commit.as_deref(), Some("アリガトウ"));
     }
 
     #[test]
@@ -1656,8 +1754,11 @@ mod tests {
         let committed = s.key(&key(VK_SPACE, false)).commit.unwrap_or_default();
         assert!(committed.starts_with(&second));
         // 학습: 같은 키를 다시 치면 고른 후보가 1위
+        // (가나 변환 후보는 Mozc가 학습하므로, Mozc 없는 이 시험에서는 확인하지 않는다)
         s.reset();
-        assert_eq!(type_keys(&mut s, "go").preedit_text(), second);
+        if !is_kana_label(&list.labels[sel]) {
+            assert_eq!(type_keys(&mut s, "go").preedit_text(), second);
+        }
     }
 
     #[test]
@@ -1711,7 +1812,7 @@ mod tests {
         let lang_of = |t: &str| match t {
             "go" | "ｇｏ" => "en",
             "해" | "海" | "害" => "ko",
-            "ご" => "ja",
+            "ご" | "ゴ" | "ｺﾞ" => "ja",
             _ => "mix",
         };
         let starts: Vec<usize> =
