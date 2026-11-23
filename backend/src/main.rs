@@ -8,6 +8,7 @@
 mod candhost;
 mod hanja;
 mod lock;
+mod pipe;
 mod pipe_security;
 mod session;
 mod settings;
@@ -23,17 +24,9 @@ use engine::model::Models;
 use ipc::{Request, Response};
 use session::Session;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_MORE_DATA, ERROR_PIPE_CONNECTED, HANDLE,
-    INVALID_HANDLE_VALUE,
-};
-use windows::Win32::Storage::FileSystem::{
-    FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, PIPE_ACCESS_DUPLEX,
-};
-use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
-};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_PIPE_CONNECTED, HANDLE};
+use windows::Win32::Storage::FileSystem::{FlushFileBuffers, WriteFile};
+use windows::Win32::System::Pipes::{ConnectNamedPipe, DisconnectNamedPipe};
 use windows::Win32::System::Threading::CreateMutexW;
 
 pub(crate) fn log(msg: &str) {
@@ -67,20 +60,18 @@ fn model_path() -> PathBuf {
 struct PipeHandle(isize);
 unsafe impl Send for PipeHandle {}
 
-fn read_message(h: HANDLE) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut buf = vec![0u8; 64 * 1024];
-    loop {
-        let mut n = 0u32;
-        let res = unsafe { ReadFile(h, Some(&mut buf), Some(&mut n), None) };
-        out.extend_from_slice(&buf[..n as usize]);
-        match res {
-            Ok(()) => return Some(out),
-            Err(_) if unsafe { GetLastError() } == ERROR_MORE_DATA => continue,
-            Err(_) => return None,
-        }
+/// 같은 내용의 로그가 쏟아지지 않게: 마지막으로 남긴 뒤 1분이 지났을 때만 남긴다.
+fn log_throttled(last: &Mutex<Option<std::time::Instant>>, msg: &str) {
+    let Ok(mut last) = last.lock() else { return };
+    if last.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60)) {
+        *last = Some(std::time::Instant::now());
+        log(msg);
     }
 }
+
+static BAD_REQUEST_LOG: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+static REJECT_LOG: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+static CONNECTIONS: pipe::Slots = pipe::Slots::new(pipe::MAX_CONNECTIONS);
 
 fn data_dir() -> PathBuf {
     std::env::var("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("multilang-ime")
@@ -104,7 +95,15 @@ const VK_HANGUL: u16 = 0x15;
 fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory) {
     let h = HANDLE(h.0 as *mut c_void);
     let mut session = Session::new(models, history, Some(data_dir().join("history.json")), mozc_server_path());
-    while let Some(msg) = read_message(h) {
+    loop {
+        let msg = match pipe::read_message(h, pipe::MAX_REQUEST) {
+            pipe::Read::Message(m) => m,
+            pipe::Read::TooLarge => {
+                log_throttled(&BAD_REQUEST_LOG, &format!("request over {} bytes: connection closed", pipe::MAX_REQUEST));
+                break;
+            }
+            pipe::Read::Closed => break,
+        };
         let t = std::time::Instant::now();
         let req = serde_json::from_slice::<Request>(&msg);
         let op = req.as_ref().map(|r| format!("{r:?}")).unwrap_or_default();
@@ -121,7 +120,11 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory)
             Ok(Request::Test { key }) => session.test(&key),
             Ok(Request::Key { key }) => session.key(&key),
             Ok(Request::Hello { app }) => {
-                session.app = app;
+                if pipe::valid_app_name(&app) {
+                    session.app = app;
+                } else {
+                    log_throttled(&BAD_REQUEST_LOG, &format!("bad app name ({} chars) ignored", app.chars().count()));
+                }
                 Response::default()
             }
             Ok(Request::ClearLearning) => session.clear_learning(),
@@ -130,7 +133,7 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory)
             Ok(Request::Reset) => session.reset(),
             Ok(Request::ShiftTap) => session.shift_tap(),
             Err(e) => {
-                log(&format!("bad request: {e}"));
+                log_throttled(&BAD_REQUEST_LOG, &format!("bad request: {e}"));
                 Response::default()
             }
         };
@@ -201,23 +204,11 @@ fn main() {
     let sa = pipe_security::pipe_security();
     log(if sa.is_some() { "pipe security: user + AppContainer, low integrity" } else { "pipe security: default (AppContainer apps cannot connect)" });
     loop {
-        let h = unsafe {
-            CreateNamedPipeW(
-                PCWSTR(name.as_ptr()),
-                PIPE_ACCESS_DUPLEX | FILE_FLAGS_AND_ATTRIBUTES(0),
-                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-                PIPE_UNLIMITED_INSTANCES,
-                64 * 1024,
-                64 * 1024,
-                0,
-                sa.as_ref().map(|a| a as *const _),
-            )
-        };
-        if h == INVALID_HANDLE_VALUE {
+        let Some(h) = pipe::create(&name, sa.as_ref()) else {
             log("CreateNamedPipeW failed");
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
-        }
+        };
         let connected =
             unsafe { ConnectNamedPipe(h, None) }.is_ok() || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
         if !connected {
@@ -226,8 +217,20 @@ fn main() {
             }
             continue;
         }
+        // 동시 연결 상한: 넘으면 받자마자 끊는다 (TIP는 실패하면 키를 앱에 넘기고 나중에 다시 붙는다)
+        let Some(slot) = CONNECTIONS.try_acquire() else {
+            log_throttled(&REJECT_LOG, &format!("too many connections (max {}): rejected", pipe::MAX_CONNECTIONS));
+            unsafe {
+                let _ = DisconnectNamedPipe(h);
+                let _ = CloseHandle(h);
+            }
+            continue;
+        };
         let ph = PipeHandle(h.0 as isize);
         let hist = history.clone();
-        std::thread::spawn(move || handle_client(ph, models, hist));
+        std::thread::spawn(move || {
+            let _slot = slot;
+            handle_client(ph, models, hist)
+        });
     }
 }
