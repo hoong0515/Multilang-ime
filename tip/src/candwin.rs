@@ -186,7 +186,9 @@ fn ensure_window() -> Option<HWND> {
             None,
         )
     }
+    .inspect_err(|e| crate::debug_note(&format!("candwin create failed {e:?}")))
     .ok()?;
+    crate::debug_note(&format!("candwin created {:?}", hwnd.0));
     WIN.with(|w| {
         if let Ok(mut w) = w.try_borrow_mut() {
             w.hwnd = Some(hwnd);
@@ -220,6 +222,9 @@ fn follow_owner(hwnd: HWND) {
         return;
     }
     let current = unsafe { GetWindow(hwnd, GW_OWNER) }.unwrap_or_default();
+    let mut buf = [0u16; 64];
+    let n = unsafe { GetClassNameW(root, &mut buf) } as usize;
+    crate::debug_note(&format!("candwin owner root={:?} class={}", root.0, String::from_utf16_lossy(&buf[..n])));
     if current != root {
         #[cfg(target_pointer_width = "64")]
         unsafe {
@@ -258,7 +263,8 @@ fn show_inner(list: &CandidateList, header: Option<&str>, anchor: RECT) {
         y = y.max(wa.top);
     }
     unsafe {
-        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        let r = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        crate::debug_note(&format!("candwin show at {x},{y} {width}x{height} -> {r:?} visible={}", IsWindowVisible(hwnd).as_bool()));
         let _ = InvalidateRect(Some(hwnd), None, true);
     }
 }

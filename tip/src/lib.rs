@@ -108,13 +108,17 @@ fn debug_log(what: &str, wparam: WPARAM, lparam: LPARAM) {
         return;
     }
     use std::io::Write as _;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("tip-debug.log")) {
-        let _ = writeln!(f, "{what} vk=0x{:02X} lparam=0x{:08X}", wparam.0, lparam.0 as u32);
+    // logs 폴더가 있으면 거기에 (샌드박스 앱도 쓸 수 있게 권한을 준 폴더), 프로세스 이름도 함께
+    let logs = dir.join("logs");
+    let path = if logs.is_dir() { logs.join("tip-debug.log") } else { dir.join("tip-debug.log") };
+    let exe = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "[{exe}] {what} vk=0x{:02X} lparam=0x{:08X}", wparam.0, lparam.0 as u32);
     }
 }
 
 /// 진단 로그 한 줄 (MULTILANG_TIP_DEBUG 파일이 있을 때만).
-fn debug_note(what: &str) {
+pub(crate) fn debug_note(what: &str) {
     debug_log(what, WPARAM(0), LPARAM(0));
 }
 
@@ -332,6 +336,9 @@ impl TextService_Impl {
         *self.shown.borrow_mut() = resp.preedit_text();
         self.window_open.set(resp.candidates.is_some() && !resp.preedit.is_empty());
         let anchor = self.state.try_borrow().ok().and_then(|s| s.anchor);
+        if resp.candidates.is_some() {
+            debug_note(&format!("candidates: floating={floating} anchor={:?}", anchor.map(|a| (a.left, a.top, a.right, a.bottom))));
+        }
         if floating {
             // 조합 창 모드: 조합 문자열과 후보를 커서 아래 창에 보인다 (부분 변환 중이면 고치는 부분을 [ ]로)
             let text = resp.preedit_text();
@@ -835,6 +842,10 @@ impl EditSession {
             unsafe { view.GetTextExt(ec, range, &mut rc, &mut clipped)? };
             Ok(rc)
         })();
+        match &rect {
+            Ok(rc) => debug_note(&format!("anchor ok {},{} - {},{}", rc.left, rc.top, rc.right, rc.bottom)),
+            Err(e) => debug_note(&format!("anchor failed {e:?}")),
+        }
         if let (Ok(rc), Ok(mut s)) = (rect, self.state.try_borrow_mut()) {
             s.anchor = Some(rc);
         }
