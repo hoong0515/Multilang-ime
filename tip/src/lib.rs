@@ -1546,6 +1546,10 @@ fn unregister_tsf() {
                 let _ = cats.UnregisterCategory(&CLSID_TEXT_SERVICE, &cat, &CLSID_TEXT_SERVICE);
             }
         }
+        // the text service itself (removes HKLM\...\CTF\TIP\{CLSID}; the calls above leave empty keys behind)
+        if let Ok(p) = CoCreateInstance::<_, ITfInputProcessorProfiles>(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER) {
+            let _ = p.Unregister(&CLSID_TEXT_SERVICE);
+        }
     }
 }
 

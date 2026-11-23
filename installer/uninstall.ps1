@@ -72,6 +72,11 @@ Step "stop backend and Mozc" {
 Step "unregister TIP" {
     if (Test-Path "$Dest\x86\multilang_tip.dll") { Start-Process "$env:windir\SysWOW64\regsvr32.exe" -ArgumentList "/s", "/u", "`"$Dest\x86\multilang_tip.dll`"" -Wait }
     if (Test-Path "$Dest\multilang_tip.dll") { Start-Process "$env:windir\System32\regsvr32.exe" -ArgumentList "/s", "/u", "`"$Dest\multilang_tip.dll`"" -Wait }
+    # TSF registration of our CLSID (64-bit and 32-bit views). DllUnregisterServer removes it with the TSF API;
+    # versions before 0.1.0 final left empty Category/LanguageProfile keys behind, so remove what is left of our key.
+    foreach ($k in "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$Clsid", "HKLM:\SOFTWARE\WOW6432Node\Microsoft\CTF\TIP\$Clsid") {
+        if (Test-Path $k) { Remove-Item $k -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 }
 if ($RemoveUserData) {
     Step "delete user data $env:LOCALAPPDATA\multilang-ime" {

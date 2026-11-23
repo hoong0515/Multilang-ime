@@ -153,6 +153,26 @@ public static extern IntPtr LoadLibraryEx(string path, IntPtr file, int flags);
     [void][MLTest.K32]::FreeLibrary($h2)
     $null = Remove-InstalledFiles $busy @(Get-Content "$busy\install-manifest.txt")
 
+    Write-Host "9c. a folder left by an uninstall before the reboot (only .old copies and debug logs) can be installed over"
+    $left = Join-Path $base "Leftover"
+    New-Item -ItemType Directory -Force "$left\x86", "$left\logs" | Out-Null
+    "x" | Set-Content "$left\multilang_tip.dll.old639310834679928644"
+    "x" | Set-Content "$left\x86\multilang_tip.dll.old639310834680592198"
+    "x" | Set-Content "$left\tip-debug.log"
+    "x" | Set-Content "$left\logs\tip-debug.log"
+    Check (-not (Throws { Get-PreviousInstall $left $null })) "leftovers only: accepted"
+    Check (@(Get-PreviousInstall $left $null).Count -eq 0) "treated as a new install"
+    "mine" | Set-Content "$left\notes.txt"
+    Check (Throws { Get-PreviousInstall $left $null }) "with another file: refused"
+    Remove-Item "$left\notes.txt"
+    "x" | Set-Content "$left\other.dll.old123"
+    Check (Throws { Get-PreviousInstall $left $null }) ".old copy of a file that is not ours: refused"
+    Remove-Item "$left\other.dll.old123"
+    $null = Install-PackageFiles $pkg $left @() @("install.ps1", "install.cmd")
+    Check ((Test-Path "$left\install-manifest.txt") -and (Test-Path "$left\backend.exe")) "installed over the leftovers"
+    Check ((Get-Content "$left\tip-debug.log") -eq "x") "debug log left as it was"
+    Check (-not (Test-Path "$left\multilang_tip.dll.old639310834679928644")) "old copy cleaned up by the install"
+
     Write-Host "10. legacy install (no manifest): only when it is the registered folder with our files"
     $legacy = Join-Path $base "Legacy"
     New-Item -ItemType Directory $legacy | Out-Null

@@ -20,6 +20,10 @@ public static extern bool MoveFileEx(string existing, IntPtr replacement, int fl
 
 # Book a file or (empty) folder for deletion at the next reboot. Needs administrator rights.
 function Register-DeleteAtReboot([string]$path) {
+    # already booked (an earlier install or uninstall): do not add the same entry again
+    $pending = @((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name PendingFileRenameOperations -ErrorAction SilentlyContinue).PendingFileRenameOperations)
+    # (Windows 11 writes delete entries as "*1\??\<path>")
+    if (($pending -contains "\??\$path") -or ($pending -contains "*1\??\$path")) { return $true }
     [MultilangIME.NativeV2]::MoveFileEx($path, [IntPtr]::Zero, 4)  # MOVEFILE_DELAY_UNTIL_REBOOT
 }
 
@@ -88,6 +92,22 @@ function Test-SameUserAsDesktop {
     (-not $desk) -or ($desk -ieq $me)
 }
 
+# Does $dest hold only what an uninstall leaves before the reboot: <one of our files>.old<digits>, and the
+# diagnostic files (MULTILANG_TIP_DEBUG, tip-debug.log, logs\)? Folders count when they hold only such files.
+function Test-OnlyLeftovers([string]$dest) {
+    $dest = Get-FullDir $dest
+    $ours = @($Legacy010 | ForEach-Object { Split-Path $_ -Leaf }) | Select-Object -Unique
+    $files = @(Get-ChildItem -LiteralPath $dest -Force -Recurse -File -ErrorAction SilentlyContinue)
+    if ($files.Count -eq 0) { return $false }
+    foreach ($f in $files) {
+        $rel = $f.FullName.Substring($dest.Length).TrimStart('\')
+        $isOld = ($f.Name -match '^(.+)\.old\d+$') -and ($ours -contains $Matches[1])
+        $isDiag = ($rel -eq "MULTILANG_TIP_DEBUG") -or ($rel -eq "tip-debug.log") -or ($rel -like "logs\*")
+        if (-not ($isOld -or $isDiag)) { return $false }
+    }
+    return $true
+}
+
 # The relative paths we installed before into $dest (empty for a new or empty folder).
 # Throws when $dest is not ours. $registered = InstallLocation from Programs and Features (or $null).
 function Get-PreviousInstall([string]$dest, [string]$registered) {
@@ -100,6 +120,9 @@ function Get-PreviousInstall([string]$dest, [string]$registered) {
     $isLegacy = $registered -and ((Get-FullDir $registered) -eq $dest) -and
         (Test-Path -LiteralPath (Join-Path $dest "backend.exe")) -and (Test-Path -LiteralPath (Join-Path $dest "engine_model.json"))
     if ($isLegacy) { return $Legacy010 }
+    # left over from an uninstall before the reboot: only renamed copies of our files waiting for the reboot
+    # and diagnostic logs. Install over them (they are not deleted here; the reboot or the next install does).
+    if ((Test-Path -LiteralPath $dest) -and (Test-OnlyLeftovers $dest)) { return @() }
     if ((Test-Path -LiteralPath $dest) -and @(Get-ChildItem -LiteralPath $dest -Force).Count -gt 0) {
         throw "$dest is not empty and is not a Multilang IME install folder; choose an empty folder"
     }
