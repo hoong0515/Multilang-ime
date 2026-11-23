@@ -59,6 +59,14 @@
 - 일반화: 조합 시작 0.5초 안에 앱이 끝내는 일이 같은 창 클래스에서 두 번 이어지면 그 클래스를 조합 창 모드로 배운다 (프로세스 동안).
 - 주의: 64비트 tasklist /m은 32비트 프로세스의 모듈을 못 볼 수 있다 → 32비트 PowerShell의 Get-Process .Modules로 확인.
 
+## A7. Synthesizer V Studio 2 가사 입력칸 (2026-11-24, 해결)
+
+- JUCE 앱. 조합을 키마다 끝내서 조합 창 모드(창 클래스 `JUCE_…` 자동 학습). 조합 창·후보창이 이전에 편집한 노트에 붙었다.
+- 원인(진단 로그): JUCE는 IMM 후보 위치(`ImmSetCandidateWindow`)를 WM_IME_COMPOSITION을 받을 때만 고치는데, 조합 창 모드에서는 확정 때만 그 메시지가 간다. 새 노트를 열면 첫 확정 전까지 이전 위치가 남는다. 시스템 커서는 창의 (0,0).
+- 고침(`tip/src/lib.rs` `mod juce`): 새 조합의 첫 키에 빈 WM_IME_COMPOSITION(lParam 0) + WM_IME_ENDCOMPOSITION을 그 창에 보내 JUCE가 위치를 다시 정하게 한다(글자 변화 없음, Tab 이동 확인). 대비로 마지막 확정 뒤 마우스 클릭이 있으면 클릭 자리 아래. JUCE 창 클래스에서만.
+- 사용자 확인: 클릭·Tab(먼 노트 포함) 이동, 기존 가사 바꾸기, Esc 취소 모두 정상.
+- 진단: `MULTILANG_TIP_DEBUG`가 있으면 조합 창 모드에서 `floating diag`(TSF 위치, 시스템 커서, IMM 조합·후보 위치, DPI, 마우스)를 남긴다.
+
 ## B. 품질 (중간 크기)
 
 0. **영단어 + 일본어 조사 패턴** (사용자 제안) — **적용함**

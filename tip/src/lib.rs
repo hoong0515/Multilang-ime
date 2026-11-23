@@ -377,6 +377,20 @@ impl TextService_Impl {
         if floating {
             // 조합 창 모드: 조합 문자열과 후보를 커서 아래 창에 보인다 (부분 변환 중이면 고치는 부분을 [ ]로)
             let text = resp.preedit_text();
+            let mut anchor = anchor;
+            if juce::is_juce_class(&focus_class()) {
+                if resp.commit.as_ref().is_some_and(|c| !c.is_empty()) {
+                    juce::note_commit();
+                }
+                let focus = unsafe { GetFocus() };
+                let mut window = RECT::default();
+                let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(focus, &mut window) };
+                let chosen = juce::anchor(anchor, window);
+                if chosen != anchor {
+                    debug_note(&format!("juce anchor {:?} -> {:?}", anchor.map(|a| (a.left, a.top)), chosen.map(|a| (a.left, a.top))));
+                }
+                anchor = chosen;
+            }
             let shown_text = if resp.preedit.len() > 1 && resp.preedit.iter().any(|p| p.focused) {
                 resp.preedit.iter().map(|p| if p.focused { format!("[{}]", p.text) } else { p.text.clone() }).collect::<String>()
             } else {
@@ -393,6 +407,7 @@ impl TextService_Impl {
                 }
             };
             let list = if own { resp.candidates.as_ref() } else { None };
+            floating_diag(anchor);
             match anchor {
                 Some(a) if !text.is_empty() => candwin::show_floating(&shown_text, list, a),
                 _ => candwin::hide(),
@@ -574,6 +589,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
     }
 
     fn Deactivate(&self) -> Result<()> {
+        juce::remove_hook();
         let (tm, tid) = match self.state.try_borrow_mut() {
             Ok(mut s) => {
                 s.composition = None;
@@ -631,6 +647,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         } else {
             // 다른 앱에서 한/영 키로 고정을 바꿨을 수 있다: 입력 표시기만 맞춘다
             let _ = self.call(&Request::Status);
+            if juce::is_juce_class(&focus_class()) {
+                juce::ensure_hook();
+            }
         }
         Ok(())
     }
@@ -679,6 +698,10 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             s.shift_down = None; // 다른 키가 끼면 탭이 아니다 (Shift+글자 = 대문자)
         }
         let Ok(ctx) = pic.ok() else { return Ok(false.into()) };
+        // JUCE 앱: 조합 창 위치를 정하려고 이 스레드의 마우스 클릭을 기록한다
+        if juce::is_juce_class(&focus_class()) {
+            juce::ensure_hook();
+        }
         // 조합 창 모드의 조합이 다른 입력칸 것이면 (포커스 이동) 버린다
         let stale = self.state.try_borrow().ok().and_then(|s| s.floating.as_ref().map(|f| f.1)).is_some_and(|p| p != ctx.as_raw() as usize);
         if stale {
@@ -695,6 +718,10 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         let Some(t) = self.call(&Request::Test { key }) else {
             return Ok(self.offline_key(ctx, key).into());
         };
+        // JUCE 앱, 새 조합의 첫 키: 앱이 알려 둔 위치를 지금 입력칸 기준으로 다시 받는다 (Tab으로 노트 이동)
+        if t.eaten && !self.composing() && juce::is_juce_class(&focus_class()) {
+            juce::refresh(unsafe { GetFocus() });
+        }
         if t.flush_first {
             // 조합 중 다른 키(화살표 등): 먼저 확정하고 키는 앱이 처리하게 둔다
             match self.call(&Request::Flush) {
@@ -859,6 +886,182 @@ fn note_composition_terminated_by_app() {
         debug_note(&format!("floating mode learned for class {class}"));
         q.learned.push(class);
     }
+}
+
+/// JUCE 앱(Synthesizer V 등)의 조합 창 위치.
+///
+/// JUCE 입력칸은 창 핸들이 없는 자체 컴포넌트라, TSF(CUAS)가 주는 위치는 앱이 IMM 후보 위치로 알려 준 값이다.
+/// JUCE는 그 값을 조합 메시지(WM_IME_COMPOSITION)를 받을 때만 고치므로, 조합 창 모드에서는 글자를 확정할 때만
+/// 갱신된다. 새 입력칸(다른 노트의 가사)을 열고 첫 확정 전까지는 이전 입력칸 위치가 남는다. 시스템 커서는 창의 (0,0).
+/// 그래서 마지막 확정 뒤에 마우스 클릭(노트 더블 클릭)이 있었으면 그 자리 아래에 띄운다.
+mod juce {
+    use std::cell::Cell;
+    use std::time::Instant;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows::Win32::UI::Input::Ime::{ImmGetCandidateWindow, ImmGetContext, ImmReleaseContext, CANDIDATEFORM};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, SendMessageW, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, MOUSEHOOKSTRUCT, WH_MOUSE, WM_IME_COMPOSITION,
+        WM_IME_ENDCOMPOSITION, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    };
+
+    thread_local! {
+        static HOOK: Cell<isize> = const { Cell::new(0) };
+        static CLICK: Cell<Option<(POINT, Instant)>> = const { Cell::new(None) };
+        static COMMIT: Cell<Option<Instant>> = const { Cell::new(None) };
+    }
+
+    pub fn is_juce_class(class: &str) -> bool {
+        class.starts_with("JUCE_")
+    }
+
+    unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code >= 0 && (wparam.0 as u32 == WM_LBUTTONDOWN || wparam.0 as u32 == WM_LBUTTONDBLCLK) && lparam.0 != 0 {
+            let m = unsafe { &*(lparam.0 as *const MOUSEHOOKSTRUCT) };
+            CLICK.with(|c| c.set(Some((m.pt, Instant::now()))));
+        }
+        unsafe { CallNextHookEx(None, code, wparam, lparam) }
+    }
+
+    /// 이 스레드의 마우스 클릭을 기록하기 시작한다 (스레드 전용 훅, 이 프로세스 안).
+    pub fn ensure_hook() {
+        if HOOK.with(|h| h.get()) != 0 {
+            return;
+        }
+        if let Ok(h) = unsafe { SetWindowsHookExW(WH_MOUSE, Some(mouse_proc), None, GetCurrentThreadId()) } {
+            HOOK.with(|c| c.set(h.0 as isize));
+        }
+    }
+
+    /// 훅을 푼다 (TIP 비활성화 때. DLL이 내려가기 전에 반드시).
+    pub fn remove_hook() {
+        let h = HOOK.with(|c| c.replace(0));
+        if h != 0 {
+            let _ = unsafe { UnhookWindowsHookEx(HHOOK(h as *mut _)) };
+        }
+        CLICK.with(|c| c.set(None));
+    }
+
+    /// 앱이 알려 준 위치가 지금 입력칸 것으로 바뀐 시각 (확정했거나 `refresh`로 다시 받았을 때).
+    pub fn note_commit() {
+        COMMIT.with(|c| c.set(Some(Instant::now())));
+    }
+
+    /// 앱이 IMM에 알려 둔 후보 위치 (창 기준 좌표).
+    fn ime_pos(hwnd: HWND) -> Option<POINT> {
+        unsafe {
+            let himc = ImmGetContext(hwnd);
+            if himc.0.is_null() {
+                return None;
+            }
+            let mut cand = CANDIDATEFORM::default();
+            let ok = ImmGetCandidateWindow(himc, 0, &mut cand).as_bool();
+            let _ = ImmReleaseContext(hwnd, himc);
+            ok.then_some(cand.ptCurrentPos)
+        }
+    }
+
+    /// 조합을 시작하기 전에 JUCE가 후보 위치를 지금 입력칸 기준으로 다시 정하게 한다.
+    /// JUCE는 WM_IME_COMPOSITION을 받을 때마다 (내용 플래그가 없어도) 후보 위치를 커서 아래로 옮기고,
+    /// 이어 보내는 WM_IME_ENDCOMPOSITION은 진행 중인 조합이 없으면 내부 상태만 초기화한다. 글자는 바뀌지 않는다.
+    /// 위치가 바뀌었으면 그 뒤로는 앱이 준 위치를 믿는다 (Tab으로 다른 노트로 옮긴 경우).
+    pub fn refresh(hwnd: HWND) {
+        if hwnd.0.is_null() {
+            return;
+        }
+        let before = ime_pos(hwnd);
+        unsafe {
+            SendMessageW(hwnd, WM_IME_COMPOSITION, Some(WPARAM(0)), Some(LPARAM(0)));
+            SendMessageW(hwnd, WM_IME_ENDCOMPOSITION, Some(WPARAM(0)), Some(LPARAM(0)));
+        }
+        let after = ime_pos(hwnd);
+        if after.is_some() && after != before {
+            note_commit();
+        }
+        crate::debug_note(&format!("juce refresh {before:?} -> {after:?}"));
+    }
+
+    /// 조합 창을 띄울 위치. `tsf`: TSF가 준 위치, `window`: 포커스 창 화면 영역.
+    pub fn anchor(tsf: Option<RECT>, window: RECT) -> Option<RECT> {
+        let click = CLICK.with(|c| c.get());
+        let commit = COMMIT.with(|c| c.get());
+        choose(tsf, window, click, commit)
+    }
+
+    /// 마지막 확정 뒤의 클릭이 있으면 그 아래, 아니면 TSF 위치 (창 밖이면 클릭 자리).
+    pub fn choose(tsf: Option<RECT>, window: RECT, click: Option<(POINT, Instant)>, commit: Option<Instant>) -> Option<RECT> {
+        let below = |p: POINT| RECT { left: p.x, top: p.y + 12, right: p.x + 1, bottom: p.y + 28 };
+        let inside = |r: &RECT| r.left >= window.left && r.left < window.right && r.top >= window.top && r.top < window.bottom;
+        match (tsf, click) {
+            (_, Some((p, t))) if commit.is_none_or(|c| t > c) => Some(below(p)),
+            (Some(r), _) if inside(&r) => Some(r),
+            (_, Some((p, _))) => Some(below(p)),
+            (r, None) => r,
+        }
+    }
+}
+
+/// 진단 로그가 켜져 있는가 (DLL 옆 MULTILANG_TIP_DEBUG).
+fn debug_enabled() -> bool {
+    let dll = String::from_utf16_lossy(&module_path());
+    std::path::Path::new(&dll).parent().is_some_and(|d| d.join("MULTILANG_TIP_DEBUG").exists())
+}
+
+/// 조합 창 위치 진단: TSF가 준 위치와 함께 시스템 커서, IMM 조합·후보 창 위치, 포커스 창, DPI를 남긴다.
+fn floating_diag(anchor: Option<RECT>) {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::HiDpi::{GetAwarenessFromDpiAwarenessContext, GetDpiForWindow, GetThreadDpiAwarenessContext};
+    use windows::Win32::UI::Input::Ime::{ImmGetCandidateWindow, ImmGetCompositionWindow, ImmGetContext, ImmReleaseContext, CANDIDATEFORM, COMPOSITIONFORM};
+    use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GetWindowRect, GUITHREADINFO};
+    if !debug_enabled() {
+        return;
+    }
+    let r = |rc: &RECT| format!("{},{}-{},{}", rc.left, rc.top, rc.right, rc.bottom);
+    let mut out = format!("floating diag: tsf={}", anchor.as_ref().map(r).unwrap_or_else(|| "none".into()));
+    unsafe {
+        let mut gti = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
+        if GetGUIThreadInfo(0, &mut gti).is_ok() && !gti.hwndCaret.0.is_null() {
+            let mut p = POINT { x: gti.rcCaret.left, y: gti.rcCaret.top };
+            let _ = ClientToScreen(gti.hwndCaret, &mut p);
+            out += &format!(" caret={} (client {}) hwnd={:?}", format!("{},{}", p.x, p.y), r(&gti.rcCaret), gti.hwndCaret.0);
+        } else {
+            out += " caret=none";
+        }
+        let focus = GetFocus();
+        if !focus.0.is_null() {
+            let mut wr = RECT::default();
+            let _ = GetWindowRect(focus, &mut wr);
+            let mut buf = [0u16; 128];
+            let n = GetClassNameW(focus, &mut buf) as usize;
+            out += &format!(" focus={:?} class={} rect={} dpi={}", focus.0, String::from_utf16_lossy(&buf[..n]), r(&wr), GetDpiForWindow(focus));
+            let himc = ImmGetContext(focus);
+            if !himc.0.is_null() {
+                let mut cf = COMPOSITIONFORM::default();
+                if ImmGetCompositionWindow(himc, &mut cf).as_bool() {
+                    let mut p = cf.ptCurrentPos;
+                    let _ = ClientToScreen(focus, &mut p);
+                    out += &format!(" immcomp style={:#x} pos={},{} (screen {},{}) area={}", cf.dwStyle, cf.ptCurrentPos.x, cf.ptCurrentPos.y, p.x, p.y, r(&cf.rcArea));
+                }
+                for i in 0..2u32 {
+                    let mut cand = CANDIDATEFORM::default();
+                    if ImmGetCandidateWindow(himc, i, &mut cand).as_bool() {
+                        let mut p = cand.ptCurrentPos;
+                        let _ = ClientToScreen(focus, &mut p);
+                        out += &format!(" immcand{i} style={:#x} pos={},{} (screen {},{}) area={}", cand.dwStyle, cand.ptCurrentPos.x, cand.ptCurrentPos.y, p.x, p.y, r(&cand.rcArea));
+                    }
+                }
+                let _ = ImmReleaseContext(focus, himc);
+            } else {
+                out += " himc=none";
+            }
+        }
+        out += &format!(" awareness={:?}", GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()));
+        let mut cur = POINT::default();
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut cur);
+        out += &format!(" mouse={},{}", cur.x, cur.y);
+    }
+    debug_note(&out);
 }
 
 fn legacy_floating(context: &ITfContext) -> bool {
@@ -1397,5 +1600,41 @@ mod scope_tests {
         assert!(!scopes_off(&[IS_DEFAULT.0]));
         assert!(!scopes_off(&[IS_SEARCH.0]));
         assert!(!scopes_off(&[IS_TEXT.0, IS_CHAT.0]));
+    }
+}
+
+#[cfg(test)]
+mod juce_tests {
+    use super::juce::choose;
+    use std::time::{Duration, Instant};
+    use windows::Win32::Foundation::{POINT, RECT};
+
+    const WINDOW: RECT = RECT { left: 27, top: 111, right: 2054, bottom: 1264 };
+    const STALE: RECT = RECT { left: 618, top: 943, right: 634, bottom: 959 };
+
+    #[test]
+    fn click_after_last_commit_wins() {
+        let commit = Instant::now();
+        let click = (POINT { x: 397, y: 869 }, commit + Duration::from_millis(10));
+        assert_eq!(choose(Some(STALE), WINDOW, Some(click), Some(commit)), Some(RECT { left: 397, top: 881, right: 398, bottom: 897 }));
+        // 아직 확정한 적이 없어도 클릭 자리
+        assert_eq!(choose(Some(STALE), WINDOW, Some(click), None).map(|r| r.left), Some(397));
+    }
+
+    #[test]
+    fn after_commit_tsf_position_is_used() {
+        let click = (POINT { x: 397, y: 869 }, Instant::now());
+        let commit = click.1 + Duration::from_millis(10);
+        assert_eq!(choose(Some(STALE), WINDOW, Some(click), Some(commit)), Some(STALE));
+        assert_eq!(choose(Some(STALE), WINDOW, None, Some(commit)), Some(STALE));
+    }
+
+    #[test]
+    fn outside_window_falls_back_to_click() {
+        let click = (POINT { x: 397, y: 869 }, Instant::now());
+        let commit = click.1 + Duration::from_millis(10);
+        let corner = RECT { left: 2559, top: 1391, right: 2560, bottom: 1391 };
+        assert_eq!(choose(Some(corner), WINDOW, Some(click), Some(commit)).map(|r| r.left), Some(397));
+        assert_eq!(choose(Some(corner), WINDOW, None, None), Some(corner));
     }
 }
