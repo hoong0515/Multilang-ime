@@ -98,6 +98,8 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory)
     // 관리 명령(학습 지우기)은 샌드박스가 아닌 보통 무결성 이상 프로세스만 (확인 못 하면 거부)
     let identity = pipe::client_identity(h);
     let may_manage = identity.is_some_and(|(ac, rid)| pipe::may_manage(ac, rid));
+    // 같은 기준으로 학습도: 샌드박스·낮은 무결성 연결의 확정은 공용 학습(판정·한자·Mozc)에 남기지 않는다
+    session.set_learning(may_manage);
     loop {
         let msg = match pipe::read_message(h, pipe::MAX_REQUEST) {
             pipe::Read::Message(m) => m,

@@ -249,6 +249,8 @@ pub struct MozcBridge {
     cache: HashMap<String, mozc::Conversion>,
     /// 지금 Mozc 조합에 들어 있는 로마자 키. None이면 조합 상태를 모른다 (다음에 지우고 다시 보낸다).
     typed: Option<String>,
+    /// false면 확정해도 Mozc가 학습하지 않는다 (샌드박스·낮은 무결성 클라이언트).
+    learn: bool,
 }
 
 /// Mozc의 조합 문자열과 우리 가나가 같은가. Mozc는 끝의 n을 전각 'ｎ'으로 두었다가 변환할 때 ん으로 바꾼다.
@@ -264,7 +266,7 @@ fn same_kana(mozc: &str, ours: &str) -> bool {
 
 impl MozcBridge {
     pub fn new(server: Option<PathBuf>) -> Self {
-        Self { server, session: None, failed_at: None, cache: HashMap::new(), typed: None }
+        Self { server, session: None, failed_at: None, cache: HashMap::new(), typed: None, learn: true }
     }
 
     fn ensure(&mut self) -> bool {
@@ -395,8 +397,17 @@ impl MozcBridge {
     }
 
     /// Mozc로 확정한다 (학습). pick은 첫 문절 후보 id.
+    /// 학습하지 않는 연결이면 확정(submit) 대신 조합을 버리고 None (호출한 쪽은 보이던 글자를 쓴다).
     pub fn commit(&mut self, kana: &str, keys: &str, pick: Option<i32>) -> Option<String> {
         if !self.ensure() {
+            return None;
+        }
+        if !self.learn {
+            let r = self.session.as_mut()?.revert();
+            self.typed = Some(String::new());
+            if let Err(e) = r {
+                self.drop_session("revert", e);
+            }
             return None;
         }
         let s = self.session.as_mut()?;
@@ -713,6 +724,8 @@ pub struct Session<'m> {
     history: SharedHistory,
     history_path: Option<PathBuf>,
     mozc: MozcBridge,
+    /// false면 확정을 학습하지 않는다 (판정 기록·한자·Mozc). 샌드박스(AppContainer)·낮은 무결성 연결.
+    learn: bool,
     /// 이 연결의 프로그램 실행 파일 이름 (Hello)
     pub app: String,
 }
@@ -737,8 +750,15 @@ impl<'m> Session<'m> {
             history,
             history_path,
             mozc: MozcBridge::new(mozc_server),
+            learn: true,
             app: String::new(),
         }
+    }
+
+    /// 이 연결의 확정을 학습할지 (샌드박스 앱이 가짜 입력으로 공용 학습을 바꾸지 못하게, 보안 검토 2026-11-24 R2).
+    pub fn set_learning(&mut self, on: bool) {
+        self.learn = on;
+        self.mozc.learn = on;
     }
 
     /// 설정을 반영한다 (요청마다): 사용할 언어. 조합 중에는 바꾸지 않는다.
@@ -1440,7 +1460,7 @@ impl<'m> Session<'m> {
                         let _ = self.mozc.commit_ctx(&kp.kana, &p.keys, ch.mozc_pick, p.after_noun);
                     }
                 }
-                if ch.label == HANJA {
+                if ch.label == HANJA && self.learn {
                     crate::hanja::learn(&ch.cand.segments[0].text, &t);
                 }
                 segs.push(seg(&t, choice_lang(ch)));
@@ -1484,11 +1504,11 @@ impl<'m> Session<'m> {
                     segs.push(seg(shown, lang));
                 }
             }
-            if c.label == HANJA {
+            if c.label == HANJA && self.learn {
                 crate::hanja::learn(&c.cand.segments[0].text, &text);
             }
             // 학습: 확정한 형태를 기록하고 저장한다 (사전 후보는 판정 학습에 넣지 않는다)
-            if c.label == DICT {
+            if c.label == DICT || !self.learn {
             } else if let Ok(mut h) = self.history.lock() {
                 h.record(&self.keys, &c.cand.form);
                 if let Some(p) = &self.history_path {
@@ -1778,6 +1798,26 @@ mod tests {
         assert_eq!(r.preedit_text(), ".");
         assert_eq!(s.flush().commit.as_deref(), Some("."));
         assert!(!s.test(&key(VK_SPACE, false)).eaten);
+    }
+
+    #[test]
+    fn untrusted_connection_does_not_learn() {
+        let Some(m) = models() else { return };
+        let mut s = session(&m);
+        s.set_learning(false);
+        let first = type_keys(&mut s, "go").preedit_text();
+        let list = s.shift_tap().candidates.expect("candidate window");
+        let sel = list.selected;
+        if is_kana_label(&list.labels[sel]) {
+            return;
+        }
+        s.key(&key(0x31 + sel as u16, false));
+        let committed = s.key(&key(VK_SPACE, false)).commit.unwrap_or_default();
+        assert!(committed.starts_with(&list.items[sel]));
+        // 확정은 되지만 기록되지 않는다: 같은 키의 1위가 그대로
+        assert_eq!(s.history.lock().unwrap().len(), 0);
+        s.reset();
+        assert_eq!(type_keys(&mut s, "go").preedit_text(), first);
     }
 
     #[test]
