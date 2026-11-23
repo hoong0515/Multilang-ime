@@ -560,7 +560,12 @@ impl TextService_Impl {
             }
             RECT { left: p.x, top: p.y, right: p.x + 1, bottom: p.y + 16 }
         });
-        candwin::show_toast(&text, anchor);
+        let badge = match ind.lang.as_str() {
+            "en" => "A",
+            "ja" => "あ",
+            _ => "가",
+        };
+        candwin::show_toast(&text, badge, anchor);
     }
 
     /// 지금 입력칸에서 IME를 꺼야 하는가: 앱이 키보드를 꺼 둔 문맥, 빈 문맥, 또는 비밀번호·숫자 등 용도의 칸.
