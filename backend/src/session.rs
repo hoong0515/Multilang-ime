@@ -27,8 +27,13 @@ use engine::model::Models;
 use engine::romaji::parse;
 use ipc::{CandidateList, Key, PreeditSegment, Response};
 
-const MAX_CANDIDATES: usize = 16;
-const PICK_KEYS: u16 = 5; // 숫자 1~5
+const MAX_CANDIDATES: usize = 160;
+/// 후보창 한 쪽의 후보 수 (숫자 1~9로 고른다)
+const PAGE: usize = 9;
+/// 언어별 후보 수 상한 (Mozc 후보, 한자)
+const MAX_JA: usize = 100;
+const MAX_HANJA: usize = 40;
+const PICK_KEYS: u16 = PAGE as u16; // 숫자 1~9 (지금 쪽 안에서)
 /// 낱자로 흔히 쓰는 자모 (ㅋㅋ, ㅎㅎ, ㅠㅠ 등). 이것만 남는 후보는 정상 후보로 본다.
 const EXPRESSIVE_JAMO: &str = "ㅋㅎㅠㅜㄷㅇㄱㅅㅂㅈㄴㅊ";
 const MOZC_RETRY: Duration = Duration::from_secs(30);
@@ -46,6 +51,44 @@ const VK_LEFT: u16 = 0x25;
 const VK_UP: u16 = 0x26;
 const VK_RIGHT: u16 = 0x27;
 const VK_DOWN: u16 = 0x28;
+const VK_PRIOR: u16 = 0x21; // Page Up
+const VK_NEXT: u16 = 0x22; // Page Down
+
+/// 선택 위치가 있는 쪽의 첫 후보 위치.
+fn page_start(sel: usize) -> usize {
+    sel / PAGE * PAGE
+}
+
+/// Page Down / Page Up: 다음(이전) 쪽의 첫 후보로 (끝에서는 처음으로 돈다).
+fn page_move(sel: usize, n: usize, forward: bool) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let last_page = page_start(n - 1);
+    let cur = page_start(sel);
+    if forward {
+        if cur >= last_page { 0 } else { cur + PAGE }
+    } else if cur == 0 {
+        last_page
+    } else {
+        cur - PAGE
+    }
+}
+
+/// 후보 목록에서 지금 쪽만 잘라 보낸다.
+fn page_list(items: Vec<String>, labels: Vec<String>, sel: usize) -> CandidateList {
+    let n = items.len();
+    let start = page_start(sel).min(n);
+    let end = (start + PAGE).min(n);
+    let pages = n.div_ceil(PAGE);
+    CandidateList {
+        items: items[start..end].to_vec(),
+        labels: labels.get(start..end.min(labels.len())).map(|l| l.to_vec()).unwrap_or_default(),
+        selected: sel - start,
+        page: if pages > 1 { start / PAGE + 1 } else { 0 },
+        pages: if pages > 1 { pages } else { 0 },
+    }
+}
 
 // ---------------------------------------------------------------- Mozc 연결
 
@@ -727,13 +770,14 @@ impl<'m> Session<'m> {
         if is_dash(k) && !self.keys.is_empty() && self.ja_context() {
             return eat; // 장음 ー
         }
-        if let (Some(d), Some((list, _))) = (digit(k), &self.open) {
-            if d < list.len() {
+        if let (Some(d), Some((list, sel))) = (digit(k), &self.open) {
+            if page_start(*sel) + d < list.len() {
                 return eat; // 후보 고르기
             }
         }
         if let (Some(d), Some(ps)) = (digit(k), &self.parts) {
-            if d < ps.parts[ps.focus].choices.len() {
+            let p = &ps.parts[ps.focus];
+            if page_start(p.sel) + d < p.choices.len() {
                 return eat;
             }
         }
@@ -747,7 +791,7 @@ impl<'m> Session<'m> {
             return Response::default();
         }
         // 후보창이 열려 있으면 방향키·Tab으로 후보를 옮긴다 (없으면 아래에서 먼저 확정하고 앱에 넘긴다)
-        if (self.open.is_some() || self.parts.is_some()) && (matches!(k.vk, VK_LEFT..=VK_DOWN) || k.vk == VK_TAB) && !k.ctrl && !k.alt {
+        if (self.open.is_some() || self.parts.is_some()) && (matches!(k.vk, VK_PRIOR..=VK_DOWN) || k.vk == VK_TAB) && !k.ctrl && !k.alt {
             return eat;
         }
         match k.vk {
@@ -783,6 +827,10 @@ impl<'m> Session<'m> {
                         part.sel = group_jump(&part.choices, part.sel, !k.shift);
                         return self.respond();
                     }
+                    VK_NEXT | VK_PRIOR => {
+                        part.sel = page_move(part.sel, part.choices.len(), k.vk == VK_NEXT);
+                        return self.respond();
+                    }
                     VK_BACK => {
                         // 부분 변환을 닫고 친 키 그대로
                         self.parts = None;
@@ -795,8 +843,9 @@ impl<'m> Session<'m> {
                     }
                     _ => {
                         if let Some(d) = digit(k) {
-                            if d < part.choices.len() {
-                                part.sel = d;
+                            let i = page_start(part.sel) + d;
+                            if i < part.choices.len() {
+                                part.sel = i;
                                 return self.respond();
                             }
                         }
@@ -827,8 +876,8 @@ impl<'m> Session<'m> {
             return self.respond();
         }
         if let Some(d) = digit(k) {
-            if let Some((list, _)) = &self.open {
-                if let Some(c) = list.get(d) {
+            if let Some((list, sel)) = &self.open {
+                if let Some(c) = list.get(page_start(*sel) + d) {
                     self.pinned = Some(c.clone());
                     self.open = None;
                     return self.respond();
@@ -872,6 +921,10 @@ impl<'m> Session<'m> {
                     }
                     VK_UP | VK_LEFT => {
                         *sel = (*sel + n - 1) % n;
+                        return self.respond();
+                    }
+                    VK_NEXT | VK_PRIOR => {
+                        *sel = page_move(*sel, list.len(), k.vk == VK_NEXT);
                         return self.respond();
                     }
                     VK_TAB => {
@@ -1051,7 +1104,7 @@ impl<'m> Session<'m> {
             if p.leftover == 0 {
                 if let Some(conv) = self.mozc.conversion_ctx(&p.kana, &segs[1].keys, true) {
                     let rest: String = conv.segments.iter().skip(1).cloned().collect();
-                    for (id, v) in conv.candidates.iter().take(6) {
+                    for (id, v) in conv.candidates.iter().take(MAX_JA) {
                         let texts = vec![segs[0].text.clone(), format!("{v}{rest}")];
                         let ch = Choice { cand: t.chosen.clone(), texts, mozc_pick: Some(*id), label: "en+ja".into(), group: "en+ja".into() };
                         add(&mut out, ch);
@@ -1077,7 +1130,7 @@ impl<'m> Session<'m> {
                     if p.leftover == 0 {
                         if let Some(conv) = self.mozc.conversion_ctx(&p.kana, &keys, after_noun_ja) {
                             let rest: String = conv.segments.iter().skip(1).cloned().collect();
-                            for (id, v) in conv.candidates.iter().take(7) {
+                            for (id, v) in conv.candidates.iter().take(MAX_JA) {
                                 any = true;
                                 let ch = Choice { cand: c.clone(), texts: vec![format!("{v}{rest}")], mozc_pick: Some(*id), label: "ja".into(), group: "ja".into() };
                                 add(&mut out, ch);
@@ -1096,7 +1149,7 @@ impl<'m> Session<'m> {
                         continue;
                     }
                     add(&mut out, ch);
-                    for h in crate::hanja::candidates(&c.segments[0].text, 6) {
+                    for h in crate::hanja::candidates(&c.segments[0].text, MAX_HANJA) {
                         let ch = Choice { cand: c.clone(), texts: vec![h], mozc_pick: None, label: HANJA.into(), group: "ko".into() };
                         add(&mut out, ch);
                     }
@@ -1213,11 +1266,11 @@ impl<'m> Session<'m> {
                 })
                 .collect();
             let p = &ps.parts[ps.focus];
-            r.candidates = Some(CandidateList {
-                items: p.choices.iter().map(|c| c.text()).collect(),
-                labels: p.choices.iter().map(|c| c.label.clone()).collect(),
-                selected: p.sel,
-            });
+            r.candidates = Some(page_list(
+                p.choices.iter().map(|c| c.text()).collect(),
+                p.choices.iter().map(|c| c.label.clone()).collect(),
+                p.sel,
+            ));
             return r;
         }
         if let Some((c, focused, ambiguous)) = self.current() {
@@ -1235,11 +1288,11 @@ impl<'m> Session<'m> {
                 .collect();
         }
         if let Some((list, sel)) = &self.open {
-            r.candidates = Some(CandidateList {
-                items: list.iter().map(|c| c.text()).collect(),
-                labels: list.iter().map(|c| c.label.clone()).collect(),
-                selected: *sel,
-            });
+            r.candidates = Some(page_list(
+                list.iter().map(|c| c.text()).collect(),
+                list.iter().map(|c| c.label.clone()).collect(),
+                *sel,
+            ));
         }
         r
     }
@@ -1361,6 +1414,48 @@ mod tests {
             };
         }
         r
+    }
+
+    #[test]
+    fn page_helpers() {
+        assert_eq!(page_start(0), 0);
+        assert_eq!(page_start(8), 0);
+        assert_eq!(page_start(9), 9);
+        // 20개 = 3쪽 (0, 9, 18)
+        assert_eq!(page_move(3, 20, true), 9);
+        assert_eq!(page_move(9, 20, true), 18);
+        assert_eq!(page_move(19, 20, true), 0);
+        assert_eq!(page_move(0, 20, false), 18);
+        let items: Vec<String> = (0..20).map(|i| i.to_string()).collect();
+        let l = page_list(items.clone(), items.clone(), 10);
+        assert_eq!((l.items.len(), l.selected, l.page, l.pages), (9, 1, 2, 3));
+        assert_eq!(l.items[0], "9");
+        let l = page_list(items.clone(), items, 19);
+        assert_eq!((l.items.len(), l.selected, l.page), (2, 1, 3));
+        let few: Vec<String> = (0..5).map(|i| i.to_string()).collect();
+        let l = page_list(few.clone(), few, 2);
+        assert_eq!((l.items.len(), l.page, l.pages), (5, 0, 0));
+    }
+
+    #[test]
+    fn hanja_many_pages() {
+        let Some(m) = models() else { return };
+        // 한자 후보가 많은 읽기: 한 쪽(9개)을 넘어 Page Down과 숫자로 2쪽의 후보를 고른다
+        let many: Vec<String> = (0..25).map(|i| char::from_u32(0x4E00 + i).unwrap().to_string()).collect();
+        let refs: Vec<&str> = many.iter().map(|s| s.as_str()).collect();
+        crate::hanja::load_for_test(&[("가", &refs)]);
+        let mut s = session(&m);
+        type_keys(&mut s, "rk");
+        // 첫 Shift 탭은 다음 언어 묶음(영어)으로 가므로 한자 25개 뒤의 쪽이 열린다
+        let first = s.shift_tap().candidates.expect("window");
+        assert!(first.pages >= 3 && first.page >= 3, "page {}/{}", first.page, first.pages);
+        let r = s.key(&key(VK_PRIOR, false));
+        let second = r.candidates.expect("window");
+        assert_eq!(second.page, first.page - 1);
+        assert_eq!(second.selected, 0);
+        let want = second.items[2].clone();
+        let r = s.key(&key(0x33, false)); // 숫자 3: 2쪽의 세 번째
+        assert_eq!(r.preedit_text(), want);
     }
 
     #[test]

@@ -373,16 +373,17 @@ impl Session {
 fn conversion(out: &Output) -> Conversion {
     let segments = out.preedit.as_ref().map(|p| p.segment.iter().map(|s| s.value.clone()).collect()).unwrap_or_default();
     let readings = out.preedit.as_ref().map(|p| p.segment.iter().map(|s| s.key.clone().unwrap_or_default()).collect()).unwrap_or_default();
+    // 모든 후보(all_candidate_words)를 먼저: 후보창(candidate_window)은 Mozc의 첫 쪽(9개)뿐이다
     let mut candidates: Vec<(i32, String)> = out
-        .candidate_window
+        .all_candidate_words
         .as_ref()
-        .map(|w| w.candidate.iter().map(|c| (c.id.unwrap_or(0), c.value.clone())).collect())
+        .map(|l| l.candidates.iter().map(|c| (c.id.unwrap_or(0), c.value.clone().unwrap_or_default())).collect())
         .unwrap_or_default();
     if candidates.is_empty() {
         candidates = out
-            .all_candidate_words
+            .candidate_window
             .as_ref()
-            .map(|l| l.candidates.iter().map(|c| (c.id.unwrap_or(0), c.value.clone().unwrap_or_default())).collect())
+            .map(|w| w.candidate.iter().map(|c| (c.id.unwrap_or(0), c.value.clone())).collect())
             .unwrap_or_default();
     }
     Conversion { segments, readings, candidates }

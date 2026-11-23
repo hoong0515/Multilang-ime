@@ -34,10 +34,14 @@ fn wide(s: &str) -> Vec<u16> {
 fn lines(list: &CandidateList, header: Option<&str>) -> Vec<(Vec<u16>, Vec<u16>)> {
     let mut out: Vec<(Vec<u16>, Vec<u16>)> = header.map(|h| (wide(h), Vec::new())).into_iter().collect();
     out.extend(list.items.iter().enumerate().map(|(i, t)| {
-        let num = if i < 5 { format!("{} ", i + 1) } else { "  ".to_string() };
+        let num = if i < 9 { format!("{} ", i + 1) } else { "  ".to_string() };
         let lab = list.labels.get(i).cloned().unwrap_or_default();
         (wide(&format!("{num}{t}")), wide(&lab))
     }));
+    // 여러 쪽이면 맨 아래에 쪽 표시 (Page Up/Down, ↑↓로 넘긴다)
+    if list.pages > 1 {
+        out.push((wide(&format!("◀ {} / {} ▶", list.page, list.pages)), wide("PgUp/PgDn")));
+    }
     out
 }
 
@@ -112,6 +116,21 @@ fn paint(hwnd: HWND, hdc: HDC, list: &CandidateList, header: Option<&str>) {
     for (i, (main, lab)) in lines(list, header).iter().enumerate() {
         let y = pad / 2 + i as i32 * line_h;
         let selected = i >= skip && i - skip == list.selected && !list.items.is_empty();
+        let footer = list.pages > 1 && i == skip + list.items.len();
+        if footer {
+            // 쪽 표시 줄: 위에 구분선, 흐린 글자
+            unsafe {
+                let d = RECT { left: 1, top: y, right: rc.right - 1, bottom: y + 1 };
+                FillRect(hdc, &d, GetSysColorBrush(COLOR_BTNSHADOW));
+                let dim = COLORREF(GetSysColor(COLOR_GRAYTEXT));
+                SetTextColor(hdc, dim);
+                let _ = TextOutW(hdc, pad, y + pad / 2, main);
+                let mut sz = SIZE::default();
+                let _ = GetTextExtentPoint32W(hdc, lab, &mut sz);
+                let _ = TextOutW(hdc, rc.right - pad - sz.cx, y + pad / 2, lab);
+            }
+            continue;
+        }
         if i == 0 && skip == 1 {
             // 조합 줄: 밑줄을 긋고, 후보가 있으면 아래에 구분선
             unsafe {
@@ -247,7 +266,7 @@ fn show_inner(list: &CandidateList, header: Option<&str>, anchor: RECT) {
         }
     });
     let (width, line_h, pad) = measure(hwnd, list, header);
-    let rows = list.items.len() + header.is_some() as usize;
+    let rows = list.items.len() + header.is_some() as usize + (list.pages > 1) as usize;
     let height = line_h * rows as i32 + pad;
     let mut x = anchor.left;
     let mut y = anchor.bottom + 2;

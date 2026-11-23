@@ -92,6 +92,11 @@ pub struct CandidateList {
     /// 각 후보의 언어 구성 설명 (예: "ko", "en+ko").
     pub labels: Vec<String>,
     pub selected: usize,
+    /// 여러 쪽일 때 지금 쪽(1부터)과 전체 쪽 수. items는 지금 쪽의 후보만 담는다. 한 쪽이면 0.
+    #[serde(default)]
+    pub page: usize,
+    #[serde(default)]
+    pub pages: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
