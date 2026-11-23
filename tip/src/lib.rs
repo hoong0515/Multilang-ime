@@ -175,6 +175,7 @@ struct TextService {
     ui_own: Cell<bool>,
     /// 작업 표시줄 입력 표시기의 입력 모드 단추 (우리 아이콘)
     langbar: RefCell<Option<ITfLangBarItem>>,
+    indicator: Rc<RefCell<langbar::Shared>>,
 }
 
 impl TextService {
@@ -192,6 +193,7 @@ impl TextService {
             ui_id: Cell::new(None),
             ui_own: Cell::new(true),
             langbar: RefCell::new(None),
+            indicator: Rc::new(RefCell::new(langbar::Shared::default())),
         }
     }
 }
@@ -210,6 +212,9 @@ impl TextService_Impl {
         }
         let r = self.call_inner(req);
         self.offline_until.set(if r.is_none() { Some(Instant::now() + OFFLINE_BACKOFF) } else { None });
+        if let Some(ind) = r.as_ref().and_then(|r| r.indicator.as_ref()) {
+            langbar::update(&self.indicator, ind);
+        }
         r
     }
 
@@ -569,12 +574,13 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
         set_thread_compartment(&tm, tid, &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, TF_CONVERSIONMODE_NATIVE as i32);
         // 입력 표시기: 언어 기본 표시("한글") 대신 우리 아이콘
         if let Ok(lbm) = tm.cast::<ITfLangBarItemMgr>() {
-            let item: ITfLangBarItem = langbar::InputModeButton::new().into();
+            let item: ITfLangBarItem = langbar::InputModeButton::new(self.indicator.clone()).into();
             match unsafe { lbm.AddItem(&item) } {
                 Ok(()) => *self.langbar.borrow_mut() = Some(item),
                 Err(e) => debug_note(&format!("langbar add failed {e:?}")),
             }
         }
+        let _ = self.call(&Request::Status); // 입력 표시기 첫 상태
         let km: ITfKeystrokeMgr = tm.cast()?;
         let sink: ITfKeyEventSink = self.to_interface();
         unsafe { km.AdviseKeyEventSink(tid, &sink, true) }
@@ -585,6 +591,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     fn OnSetFocus(&self, fforeground: BOOL) -> Result<()> {
         if !fforeground.as_bool() {
             candwin::hide();
+        } else {
+            // 다른 앱에서 한/영 키로 고정을 바꿨을 수 있다: 입력 표시기만 맞춘다
+            let _ = self.call(&Request::Status);
         }
         Ok(())
     }

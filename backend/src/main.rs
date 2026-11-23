@@ -7,6 +7,7 @@
 
 mod candhost;
 mod hanja;
+mod lock;
 mod pipe_security;
 mod session;
 mod settings;
@@ -97,6 +98,9 @@ fn mozc_server_path() -> Option<PathBuf> {
     ["mozc_stdio.exe", "mozc_server.exe"].iter().map(|n| dir.join(n)).find(|p| p.exists())
 }
 
+/// 한/영 키 (한국어 키보드의 오른쪽 Alt 자리)
+const VK_HANGUL: u16 = 0x15;
+
 fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory) {
     let h = HANDLE(h.0 as *mut c_void);
     let mut session = Session::new(models, history, Some(data_dir().join("history.json")), mozc_server_path());
@@ -106,9 +110,14 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory)
         let op = req.as_ref().map(|r| format!("{r:?}")).unwrap_or_default();
         let settings = settings::current();
         session.apply_settings(&settings);
+        // English 고정: 조합이 없으면 키를 받지 않는다 (한/영 키만 받는다)
+        let en_locked = lock::get() == Some(engine::detector::Lang::En) && !session.is_composing();
         let off = session.app_off(&settings);
-        let resp = match req {
-            Ok(Request::Test { .. } | Request::Key { .. }) if off => Response::default(),
+        let mut resp = match req {
+            // 한/영 키(VK_HANGUL): 언어 고정 순환
+            Ok(Request::Test { key }) if key.vk == VK_HANGUL && !off => Response { eaten: true, ..Default::default() },
+            Ok(Request::Key { key }) if key.vk == VK_HANGUL && !off => session.cycle_lock(&settings),
+            Ok(Request::Test { .. } | Request::Key { .. }) if off || en_locked => Response::default(),
             Ok(Request::Test { key }) => session.test(&key),
             Ok(Request::Key { key }) => session.key(&key),
             Ok(Request::Hello { app }) => {
@@ -116,6 +125,7 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory)
                 Response::default()
             }
             Ok(Request::ClearLearning) => session.clear_learning(),
+            Ok(Request::Status) => Response::default(),
             Ok(Request::Flush) => session.flush(),
             Ok(Request::Reset) => session.reset(),
             Ok(Request::ShiftTap) => session.shift_tap(),
@@ -134,6 +144,7 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory)
         if ms > 50.0 {
             log(&format!("slow request {ms:.0} ms: {op}"));
         }
+        resp.indicator = Some(session.indicator(&resp));
         let body = serde_json::to_vec(&resp).unwrap_or_default();
         let mut written = 0u32;
         if unsafe { WriteFile(h, Some(&body), Some(&mut written), None) }.is_err() {
@@ -169,6 +180,7 @@ fn main() {
         log(&format!("history entries: {}", h.len()));
     }
     settings::init(data_dir().join("settings.json"));
+    lock::init(data_dir().join("lock.txt"));
     userdict::init(data_dir().join("user_dict.json"));
     // 한자 사전은 시작할 때 백그라운드로 읽는다 (약 30만 항목)
     if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {

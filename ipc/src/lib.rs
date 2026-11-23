@@ -72,6 +72,8 @@ pub enum Request {
     Hello { app: String },
     /// 설정 화면: 학습 기록(판정·한자·Mozc)을 모두 지운다.
     ClearLearning,
+    /// 상태만 묻는다 (입력 표시기 갱신용, 포커스를 다시 얻었을 때).
+    Status,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -99,6 +101,13 @@ pub struct CandidateList {
     pub pages: usize,
 }
 
+/// 작업 표시줄 입력 표시기: 지금 언어("ko" | "en" | "ja")와 고정 여부.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct Indicator {
+    pub lang: String,
+    pub locked: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct Response {
     /// Test: IME가 이 키를 처리하는가.
@@ -115,6 +124,9 @@ pub struct Response {
     /// 후보창 (열려 있을 때만).
     #[serde(default)]
     pub candidates: Option<CandidateList>,
+    /// 입력 표시기 (백엔드가 응답마다 채운다).
+    #[serde(default)]
+    pub indicator: Option<Indicator>,
 }
 
 impl Response {

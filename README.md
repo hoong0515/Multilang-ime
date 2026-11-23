@@ -30,6 +30,7 @@ A Windows IME that detects Korean, English and Japanese as you type, with no swi
 | 숫자 1~9, ↑↓, PgUp/PgDn | 후보 고르기, 쪽 넘기기 |
 | Tab / Shift+Tab | 후보 언어 묶음 이동 |
 | ← / → | 부분 이동 |
+| 한/영 | 언어 고정 순환 (자동 → 한국어 → English → 日本語) |
 
 ## 구조
 

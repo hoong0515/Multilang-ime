@@ -753,6 +753,11 @@ impl<'m> Session<'m> {
         if s.languages.ja {
             langs.push(Lang::Ja);
         }
+        // 언어 고정: 한국어·일본어는 그 언어로만 판정 (English 고정은 키를 받지 않는다: main)
+        match crate::lock::get() {
+            Some(l @ (Lang::Ko | Lang::Ja)) => langs = vec![l],
+            _ => {}
+        }
         if self.det.langs != langs {
             crate::log(&format!("languages: {langs:?}"));
             self.det.langs = langs;
@@ -761,6 +766,31 @@ impl<'m> Session<'m> {
                 self.run = 0;
             }
         }
+    }
+
+    /// 조합 중인가 (외부에서 English 고정 판단용).
+    pub fn is_composing(&self) -> bool {
+        self.composing()
+    }
+
+    /// 한/영 키: 지금 조합을 확정하고 언어 고정을 다음 상태로 바꾼다.
+    pub fn cycle_lock(&mut self, s: &crate::settings::Settings) -> Response {
+        let mut r = self.flush();
+        let next = crate::lock::next(crate::lock::get(), s.languages.ko, s.languages.ja);
+        crate::lock::set(next);
+        self.apply_settings(s);
+        r.eaten = true;
+        r
+    }
+
+    /// 입력 표시기: 고정이면 그 언어, 아니면 조합 중인 마지막 구간의 언어, 없으면 직전에 확정한 언어.
+    pub fn indicator(&self, resp: &Response) -> ipc::Indicator {
+        if let Some(l) = crate::lock::get() {
+            return ipc::Indicator { lang: l.code().into(), locked: true };
+        }
+        let composing = resp.preedit.iter().rev().map(|p| p.lang.as_str()).find(|l| matches!(*l, "ko" | "en" | "ja"));
+        let lang = composing.map(str::to_string).or_else(|| self.prev.map(|l| l.code().to_string())).unwrap_or_else(|| "ko".into());
+        ipc::Indicator { lang, locked: false }
     }
 
     /// 이 프로그램에서 IME를 끈 상태인가 (조합 중이면 끝까지 받는다).
@@ -1490,6 +1520,9 @@ mod tests {
 
     use engine::detector::History;
 
+    /// 전역 상태(언어 고정)를 건드리는 시험은 하나씩 돈다
+    static GLOBAL: Mutex<()> = Mutex::new(());
+
     fn models() -> Option<Models> {
         let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/engine_model.json");
         Models::load(&p).ok()
@@ -1512,6 +1545,26 @@ mod tests {
             };
         }
         r
+    }
+
+    #[test]
+    fn indicator_and_lock() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(m) = models() else { return };
+        let mut s = session(&m);
+        let st = crate::settings::Settings::default();
+        let r = type_keys(&mut s, "dkssud");
+        assert_eq!(s.indicator(&r), ipc::Indicator { lang: "ko".into(), locked: false });
+        // 한/영: 조합을 확정하고 한국어 고정
+        let r = s.cycle_lock(&st);
+        assert_eq!(r.commit.as_deref(), Some("안녕"));
+        assert_eq!(s.indicator(&r), ipc::Indicator { lang: "ko".into(), locked: true });
+        // 고정 중에는 영어로 보일 키도 한국어
+        let r = type_keys(&mut s, "hello");
+        assert!(r.preedit.iter().all(|p| p.lang == "ko"), "{:?}", r.preedit);
+        s.reset();
+        crate::lock::set(None);
+        s.apply_settings(&st);
     }
 
     #[test]
@@ -1605,6 +1658,7 @@ mod tests {
 
     #[test]
     fn language_selection() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
         let Some(m) = models() else { return };
         let mut s = session(&m);
         let mut st = crate::settings::Settings::default();

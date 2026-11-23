@@ -4,7 +4,7 @@ include!("../res/build_res.rs");
 // (a higher window band than normal apps). Windows only grants UIAccess to a signed exe installed in a
 // secure location (Program Files), started through ShellExecute.
 fn main() {
-    embed_version_resource("Multilang IME candidate window", "MultilangIME-CandWin.exe", false, true);
+    embed_version_resource("Multilang IME candidate window", "MultilangIME-CandWin.exe", false, true, &[]);
     // shared drawing code (tip/src/candwin.rs) is compiled here without the host routing
     println!("cargo::rustc-check-cfg=cfg(candhost)");
     println!("cargo::rustc-cfg=candhost");

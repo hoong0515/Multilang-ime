@@ -4,6 +4,7 @@
 //! 자동으로 오가므로 언어 하나로 보이지 않게, 앱 아이콘(가·あ)과 이름을 보인다. 누르면 설정 화면을 연다.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use windows::core::{implement, w, BOOL, BSTR, GUID, Interface, PCWSTR, Ref, Result};
 use windows::core::HRESULT;
@@ -18,17 +19,48 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, LoadImageW, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL,
 };
 
-const TOOLTIP: &str = "Multilang IME (한·영·일 자동 전환)";
 const MENU_SETTINGS: u32 = 1;
+
+/// 표시 상태 (TIP와 단추가 함께 쓴다): 지금 언어("ko" | "en" | "ja"), 고정 여부, 갱신을 알릴 곳.
+#[derive(Default)]
+pub struct Shared {
+    pub lang: String,
+    pub locked: bool,
+    sink: Option<ITfLangBarItemSink>,
+}
+
+/// 백엔드가 알려 준 상태로 바꾸고, 달라졌으면 아이콘을 다시 그리게 한다.
+pub fn update(shared: &Rc<RefCell<Shared>>, ind: &ipc::Indicator) {
+    let sink = {
+        let Ok(mut s) = shared.try_borrow_mut() else { return };
+        if s.lang == ind.lang && s.locked == ind.locked {
+            return;
+        }
+        s.lang = ind.lang.clone();
+        s.locked = ind.locked;
+        s.sink.clone()
+    };
+    if let Some(sink) = sink {
+        let _ = unsafe { sink.OnUpdate(TF_LBI_ICON | TF_LBI_TOOLTIP) };
+    }
+}
+
+fn lang_name(lang: &str) -> &'static str {
+    match lang {
+        "en" => "English",
+        "ja" => "日本語",
+        _ => "한국어",
+    }
+}
 
 #[implement(ITfLangBarItemButton, ITfLangBarItem, ITfSource)]
 pub struct InputModeButton {
-    sink: RefCell<Option<ITfLangBarItemSink>>,
+    shared: Rc<RefCell<Shared>>,
 }
 
 impl InputModeButton {
-    pub fn new() -> Self {
-        Self { sink: RefCell::new(None) }
+    pub fn new(shared: Rc<RefCell<Shared>>) -> Self {
+        Self { shared }
     }
 }
 
@@ -74,7 +106,13 @@ impl ITfLangBarItem_Impl for InputModeButton_Impl {
         Ok(())
     }
     fn GetTooltipString(&self) -> Result<BSTR> {
-        Ok(BSTR::from(TOOLTIP))
+        let (lang, locked) = self.shared.try_borrow().map(|s| (s.lang.clone(), s.locked)).unwrap_or_default();
+        let text = if locked {
+            format!("Multilang IME: {} 고정 (한/영 키로 바꾸기)", lang_name(&lang))
+        } else {
+            format!("Multilang IME: 자동 전환, 지금 {} (한/영 키로 고정)", lang_name(&lang))
+        };
+        Ok(BSTR::from(text))
     }
 }
 
@@ -99,9 +137,16 @@ impl ITfLangBarItemButton_Impl for InputModeButton_Impl {
         Ok(())
     }
     fn GetIcon(&self) -> Result<HICON> {
-        // 아이콘 리소스 1번 (res/multilang.ico). 받는 쪽이 지운다.
+        // 지금 언어 아이콘 (tip/build.rs: 101~103 자동, 111~113 고정 / 한·영·일). 받는 쪽이 지운다.
+        let (lang, locked) = self.shared.try_borrow().map(|s| (s.lang.clone(), s.locked)).unwrap_or_default();
+        let base = match lang.as_str() {
+            "en" => 102,
+            "ja" => 103,
+            _ => 101,
+        };
+        let id = if locked { base + 10 } else { base };
         let (cx, cy) = unsafe { (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
-        let h = unsafe { LoadImageW(Some(crate::module_handle().into()), PCWSTR(1 as *const u16), IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR)? };
+        let h = unsafe { LoadImageW(Some(crate::module_handle().into()), PCWSTR(id as usize as *const u16), IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR)? };
         Ok(HICON(h.0))
     }
     fn GetText(&self) -> Result<BSTR> {
@@ -114,15 +159,16 @@ impl ITfSource_Impl for InputModeButton_Impl {
         if riid.is_null() || unsafe { *riid } != ITfLangBarItemSink::IID {
             return Err(CONNECT_E_CANNOTCONNECT.into());
         }
-        let mut s = self.sink.borrow_mut();
-        if s.is_some() {
+        let sink: ITfLangBarItemSink = punk.ok()?.cast()?;
+        let mut s = self.shared.borrow_mut();
+        if s.sink.is_some() {
             return Err(CONNECT_E_ADVISELIMIT.into());
         }
-        *s = Some(punk.ok()?.cast()?);
+        s.sink = Some(sink);
         Ok(1)
     }
     fn UnadviseSink(&self, _dwcookie: u32) -> Result<()> {
-        *self.sink.borrow_mut() = None;
+        self.shared.borrow_mut().sink = None;
         Ok(())
     }
 }
