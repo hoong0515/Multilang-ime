@@ -192,7 +192,12 @@ fn paint(hwnd: HWND, hdc: HDC, list: &CandidateList, header: Option<&str>, toast
 
 fn ensure_window() -> Option<HWND> {
     if let Some(h) = WIN.with(|w| w.try_borrow().ok().and_then(|w| w.hwnd)) {
-        return Some(h);
+        // 소유자(follow_owner로 맞춘 앱의 팝업 창)가 닫히면 Windows가 소유된 이 창도 같이 없앤다
+        // (Cubase 플러그인 검색창). 그때는 새로 만든다.
+        if unsafe { IsWindow(Some(h)) }.as_bool() {
+            return Some(h);
+        }
+        crate::debug_note("candwin destroyed with its owner: recreating");
     }
     let module = crate::module_handle();
     if !REGISTERED.swap(true, Ordering::SeqCst) {
