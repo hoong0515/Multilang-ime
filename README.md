@@ -51,7 +51,7 @@ A Windows IME that detects Korean, English and Japanese as you type, with no swi
 python -m pip install -r requirements-model.txt          # Python 3.10
 python -m ime_v0.export_model                              # data/engine_model.json
 powershell -File tools\fetch-third-party.ps1               # libhangul hanja.txt
-cargo test -p engine -p ipc -p backend
+cargo test -p engine -p ipc -p backend -p tip
 cargo build --release -p tip -p backend -p candhost
 cargo build --release -p tip --target i686-pc-windows-msvc
 powershell -File settings\build.ps1

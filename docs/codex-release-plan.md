@@ -80,4 +80,4 @@
 - 백엔드 재시작: `Start-ScheduledTask "MultilangIME Backend"`. 바로 다시 띄우면 이전 파이프가 안 닫혀 한 번 실패할 수 있다(작업이 1분 뒤 재시도).
 - 개발판(`deploy\x64`)과 설치판은 같은 CLSID·작업 이름을 쓴다. 지금 등록은 설치판 쪽.
 - 32비트 프로세스의 모듈 확인은 32비트 PowerShell의 `Get-Process … .Modules`로 (64비트 tasklist는 못 볼 수 있다).
-- 빌드·시험: `cargo test -p engine -p ipc -p backend`, `powershell -File tests\installer-files.ps1`, `powershell -File installer\build-release.ps1 [-NoBuild]`. Mozc 도우미는 `K:\mozc-build\mozc` + `mozc-helper\build.ps1` (VS 2026 Community의 ATL 필요).
+- 빌드·시험: `cargo test -p engine -p ipc -p backend -p tip`, `powershell -File tests\installer-files.ps1`, `powershell -File installer\build-release.ps1 [-NoBuild]`. Mozc 도우미는 `K:\mozc-build\mozc` + `mozc-helper\build.ps1` (VS 2026 Community의 ATL 필요).

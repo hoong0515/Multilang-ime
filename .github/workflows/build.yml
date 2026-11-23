@@ -62,7 +62,11 @@ jobs:
 
       - name: Test
         shell: pwsh
-        run: cargo test --release -p engine -p ipc -p backend
+        run: |
+          cargo test --release -p engine -p ipc -p backend -p tip
+          # the UIAccess manifest stops the test exe from running; the next build step relinks with it
+          $env:CANDHOST_NO_UIACCESS = "1"
+          cargo test --release -p candhost
 
       - name: Build x64 and x86
         shell: pwsh
