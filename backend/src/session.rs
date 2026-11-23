@@ -12,7 +12,8 @@
 //! - 일본어 구간은 로마자→가나로 판정하고, 가나가 완성되면 Mozc 변환 결과(한자)를 보여준다.
 //! - Shift 탭: 일본어 토큰이면 Mozc 후보를 먼저, 그 뒤에 다른 언어 후보.
 //! - 확정: 일본어 구간은 Mozc로 확정해 Mozc 학습이 일어나게 한다.
-//! - 일본어 문맥의 기호: . , [ ] / ? ! → 。、「」・？！, 글자 뒤 '-' → ー (단어 안)
+//! - 일본어 문맥의 기호: . , [ ] / ? ! → 。、「」・？！, 글자 뒤 '-' → ー (단어 안. 앞 단어가 가나로 온전히 읽히면 영어로 판정돼도)
+//! - 발음대로 친 장음(koohii)은 ー로 바꾼 후보(コーヒー)를 가나 후보 뒤에 더한다
 //! - 영어 토큰에는 전각 후보(ｇｏ)를 덧붙인다.
 //!
 //! 확정한 형태는 학습 기록(여러 앱이 공유, 파일에 저장)에 쌓여 다음 판정에 반영된다.
@@ -32,6 +33,8 @@ const MAX_CANDIDATES: usize = 160;
 const PAGE: usize = 9;
 /// 언어별 후보 수 상한 (Mozc 후보, 한자)
 const MAX_JA: usize = 100;
+/// 발음대로 친 장음(koohii)을 ー로 바꾼 읽기의 Mozc 후보 수 (가타카나 다음에)
+const MAX_LONG_JA: usize = 3;
 const MAX_HANJA: usize = 40;
 const PICK_KEYS: u16 = PAGE as u16; // 숫자 1~9 (지금 쪽 안에서)
 /// 낱자로 흔히 쓰는 자모 (ㅋㅋ, ㅎㅎ, ㅠㅠ 등). 이것만 남는 후보는 정상 후보로 본다.
@@ -44,6 +47,24 @@ const SYMBOL: &str = "記号";
 const HIRAGANA: &str = "ひらがな";
 const KATAKANA: &str = "カタカナ";
 const HALF_KANA: &str = "半角カナ";
+
+/// 발음대로 친 장음을 ー로 바꾼 로마자 (koohii → ko-hi-, raamen → ra-men). 같은 모음이 이어질 때만.
+/// 가타카나 외래어 후보를 위한 것이라 ou·ei는 바꾸지 않는다 (とうきょう 같은 고유어가 많다).
+fn long_vowel_keys(keys: &str) -> Option<String> {
+    let cs: Vec<char> = keys.chars().collect();
+    let mut out = String::with_capacity(keys.len());
+    let mut changed = false;
+    for (i, &c) in cs.iter().enumerate() {
+        let v = c.to_ascii_lowercase();
+        if i > 0 && matches!(v, 'a' | 'i' | 'u' | 'e' | 'o') && cs[i - 1].to_ascii_lowercase() == v {
+            out.push('-');
+            changed = true;
+        } else {
+            out.push(c);
+        }
+    }
+    changed.then_some(out)
+}
 
 fn is_kana_label(l: &str) -> bool {
     l == HIRAGANA || l == KATAKANA || l == HALF_KANA
@@ -862,6 +883,22 @@ impl<'m> Session<'m> {
 
 
     /// 지금 일본어 문맥인가: 조합 중이면 표시 중인 후보의 마지막 구간, 아니면 직전에 확정한 언어.
+    /// '-'를 장음(ー)으로 조합에 넣을까: 일본어 문맥이거나, 일본어를 쓰는 중이고 지금 단어가 가나로 온전히 읽힐 때.
+    /// 앞 단어가 영어로 판정돼도(예: me → me) 장음을 칠 수 있게 한다 (me-ru → めーる). 판정은 '-'까지 넣은 키로 다시 한다.
+    fn dash_as_long_vowel(&self) -> bool {
+        if self.keys.is_empty() {
+            return false;
+        }
+        if self.ja_context() {
+            return true;
+        }
+        if self.raw || !self.sym.is_empty() || self.parts.is_some() || !self.det.langs.contains(&Lang::Ja) {
+            return false;
+        }
+        let word = self.keys.rsplit(|c: char| !c.is_ascii_alphabetic() && c != '-').next().unwrap_or("");
+        word.ends_with(|c: char| c.is_ascii_alphabetic()) && parse(word).leftover == 0
+    }
+
     fn ja_context(&self) -> bool {
         if let Some(ps) = &self.parts {
             return ps.parts.last().is_some_and(|p| choice_lang(&p.choices[p.sel]) == "ja");
@@ -892,7 +929,7 @@ impl<'m> Session<'m> {
         if is_letter(k) {
             return eat;
         }
-        if is_dash(k) && !self.keys.is_empty() && self.ja_context() {
+        if is_dash(k) && self.dash_as_long_vowel() {
             return eat; // 장음 ー
         }
         if let (Some(d), Some((list, sel))) = (digit(k), &self.open) {
@@ -994,7 +1031,7 @@ impl<'m> Session<'m> {
             }
             return r;
         }
-        if is_dash(k) && !self.keys.is_empty() && self.ja_context() {
+        if is_dash(k) && self.dash_as_long_vowel() {
             self.open = None;
             self.pinned = None;
             self.keys.push('-');
@@ -1274,6 +1311,29 @@ impl<'m> Session<'m> {
                             let ch = Choice { cand: c.clone(), texts: vec![text], mozc_pick: pick, label: label.into(), group: "ja".into() };
                             add(&mut out, ch);
                             any = true;
+                        }
+                        // 발음대로 친 장음 (koohii): ー로 바꾼 가타카나와 그 읽기의 Mozc 후보 몇 개 (コーヒー, 珈琲)
+                        if let Some(lk) = long_vowel_keys(&keys) {
+                            let lp = parse(&lk);
+                            if lp.leftover == 0 {
+                                let mut lc = c.clone();
+                                lc.segments[0].keys = lk.clone();
+                                lc.segments[0].text = lp.kana.clone();
+                                let lconv = self.mozc.conversion_ctx(&lp.kana, &lk, after_noun_ja);
+                                let kata = to_katakana(&lp.kana);
+                                let pick = lconv
+                                    .as_ref()
+                                    .filter(|cv| cv.segments.len() == 1)
+                                    .and_then(|cv| cv.candidates.iter().find(|(_, v)| *v == kata).map(|(id, _)| *id));
+                                add(&mut out, Choice { cand: lc.clone(), texts: vec![kata], mozc_pick: pick, label: KATAKANA.into(), group: "ja".into() });
+                                if let Some(lconv) = lconv {
+                                    let rest: String = lconv.segments.iter().skip(1).cloned().collect();
+                                    for (id, v) in lconv.candidates.iter().take(MAX_LONG_JA) {
+                                        let ch = Choice { cand: lc.clone(), texts: vec![format!("{v}{rest}")], mozc_pick: Some(*id), label: "ja".into(), group: "ja".into() };
+                                        add(&mut out, ch);
+                                    }
+                                }
+                            }
                         }
                         if let Some(conv) = conv {
                             let rest: String = conv.segments.iter().skip(1).cloned().collect();
@@ -2058,4 +2118,50 @@ mod tests {
         assert_eq!(r.commit.as_deref(), Some(sel.as_str()));
         assert!(!r.preedit_text().is_empty());
     }
+
+    #[test]
+    fn long_vowel_after_english_looking_token() {
+        let Some(m) = models() else { return };
+        // 앞 토큰(me, to, so)이 영어로 판정돼도 '-'는 장음으로 조합에 들어간다
+        for (keys, want) in [("me-ru", "めーる"), ("to-ru", "とーる"), ("so-su", "そーす"), ("be-su", "べーす")] {
+            let mut s = session(&m);
+            let r = type_keys(&mut s, keys);
+            assert!(r.commit.is_none(), "{keys}: committed {:?}", r.commit);
+            assert_eq!(r.preedit_text(), want, "{keys}");
+        }
+        // 가나로 읽히지 않는 단어 뒤 '-'는 지금처럼 기호 (영어 하이픈)
+        let mut s = session(&m);
+        type_keys(&mut s, "well");
+        let r = s.key(&key(VK_OEM_MINUS, false));
+        assert_eq!(r.commit.as_deref(), Some("well"));
+        assert_eq!(r.preedit_text(), "-");
+    }
+
+    #[test]
+    fn long_vowel_suggestion_from_pronunciation() {
+        assert_eq!(long_vowel_keys("koohii").as_deref(), Some("ko-hi-"));
+        assert_eq!(long_vowel_keys("raamen").as_deref(), Some("ra-men"));
+        assert_eq!(long_vowel_keys("kyuu").as_deref(), Some("kyu-"));
+        assert_eq!(long_vowel_keys("toukyou"), None);
+        assert_eq!(long_vowel_keys("sakura"), None);
+        let Some(m) = models() else { return };
+        for (keys, want) in [("koohii", "コーヒー"), ("keeki", "ケーキ"), ("biiru", "ビール"), ("deeta", "データ")] {
+            let mut s = session(&m);
+            type_keys(&mut s, keys);
+            let list = s.shift_tap().candidates.expect("candidate window");
+            assert!(list.items.iter().any(|i| i == want), "{keys}: {:?}", list.items);
+        }
+        // 고르면 ー로 확정된다
+        let mut s = session(&m);
+        type_keys(&mut s, "koohii");
+        let mut r = s.shift_tap();
+        for _ in 0..20 {
+            if r.preedit_text() == "コーヒー" {
+                break;
+            }
+            r = s.shift_tap();
+        }
+        assert_eq!(s.key(&key(VK_RETURN, false)).commit.as_deref(), Some("コーヒー"));
+    }
 }
+
