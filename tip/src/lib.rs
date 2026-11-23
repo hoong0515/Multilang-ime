@@ -15,6 +15,7 @@ mod candwin;
 mod client;
 mod display;
 mod host;
+mod langbar;
 mod uielement;
 
 use std::cell::{Cell, RefCell};
@@ -172,6 +173,8 @@ struct TextService {
     ui_elem: RefCell<Option<ITfCandidateListUIElement>>,
     ui_id: Cell<Option<u32>>,
     ui_own: Cell<bool>,
+    /// 작업 표시줄 입력 표시기의 입력 모드 단추 (우리 아이콘)
+    langbar: RefCell<Option<ITfLangBarItem>>,
 }
 
 impl TextService {
@@ -188,6 +191,7 @@ impl TextService {
             ui_elem: RefCell::new(None),
             ui_id: Cell::new(None),
             ui_own: Cell::new(true),
+            langbar: RefCell::new(None),
         }
     }
 }
@@ -543,6 +547,9 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             if let Ok(km) = tm.cast::<ITfKeystrokeMgr>() {
                 let _ = unsafe { km.UnadviseKeyEventSink(tid) };
             }
+            if let (Ok(lbm), Some(item)) = (tm.cast::<ITfLangBarItemMgr>(), self.langbar.borrow_mut().take()) {
+                let _ = unsafe { lbm.RemoveItem(&item) };
+            }
         }
         Ok(())
     }
@@ -560,6 +567,14 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
         // 조합을 키마다 끝내 버린다 (MS 한국어 IME도 한글 모드에서 켠다).
         set_thread_compartment(&tm, tid, &GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, 1);
         set_thread_compartment(&tm, tid, &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, TF_CONVERSIONMODE_NATIVE as i32);
+        // 입력 표시기: 언어 기본 표시("한글") 대신 우리 아이콘
+        if let Ok(lbm) = tm.cast::<ITfLangBarItemMgr>() {
+            let item: ITfLangBarItem = langbar::InputModeButton::new().into();
+            match unsafe { lbm.AddItem(&item) } {
+                Ok(()) => *self.langbar.borrow_mut() = Some(item),
+                Err(e) => debug_note(&format!("langbar add failed {e:?}")),
+            }
+        }
         let km: ITfKeystrokeMgr = tm.cast()?;
         let sink: ITfKeyEventSink = self.to_interface();
         unsafe { km.AdviseKeyEventSink(tid, &sink, true) }
