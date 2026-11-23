@@ -1088,6 +1088,10 @@ mod juce {
 
     /// 일반 조합 창 모드: TSF 위치가 창 안이면 그대로. 아니면(게임처럼 위치를 안 알려 주는 앱) 창 안의 마지막 클릭 아래,
     /// 그것도 없으면 창 아래쪽 가운데.
+    /// 커서 사각형으로 보기에 너무 높은 값 (px), 그때 쓸 줄 높이.
+    const TALL: i32 = 80;
+    const LINE: i32 = 20;
+
     pub fn fallback(tsf: Option<RECT>, window: RECT) -> Option<RECT> {
         let click = CLICK.with(|c| c.get()).map(|(p, _)| p);
         Some(fallback_for(tsf, window, click))
@@ -1096,6 +1100,11 @@ mod juce {
     pub fn fallback_for(tsf: Option<RECT>, window: RECT, click: Option<POINT>) -> RECT {
         let inside_pt = |x: i32, y: i32| x >= window.left && x < window.right && y >= window.top && y < window.bottom;
         if let Some(r) = tsf.filter(|r| inside_pt(r.left, r.top)) {
+            // 한워드: 창 위쪽부터 커서 줄까지 이어진 큰 사각형을 준다 (IMM 조합 영역 위쪽 ~ 조합 위치).
+            // 글자 한 줄보다 훨씬 높으면 바닥(앱이 알려 준 커서 점)을 커서 줄로 본다.
+            if r.bottom - r.top > TALL {
+                return RECT { left: r.left, top: r.bottom, right: r.left + 1, bottom: r.bottom + LINE };
+            }
             return r;
         }
         if let Some(p) = click.filter(|p| inside_pt(p.x, p.y)) {
@@ -1809,6 +1818,11 @@ mod fallback_tests {
         let r = fallback_for(Some(corner), WIN, None);
         assert!(r.left > WIN.left && r.left < WIN.right && r.top > 900 && r.top < WIN.bottom);
         // 창 안의 위치는 그대로
+        // 한워드: 창 위쪽부터 커서 줄까지의 큰 사각형 → 바닥을 커서 줄로
+        let hword = RECT { left: 502, top: 310, right: 1542, bottom: 561 };
+        let hword_win = RECT { left: 62, top: 310, right: 1542, bottom: 1325 };
+        let r = fallback_for(Some(hword), hword_win, None);
+        assert_eq!((r.left, r.top), (502, 561));
         let ok = RECT { left: 700, top: 500, right: 716, bottom: 516 };
         assert_eq!(fallback_for(Some(ok), WIN, Some(POINT { x: 900, y: 1000 })), ok);
     }
