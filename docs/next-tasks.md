@@ -45,12 +45,13 @@
 - 첫 Shift 탭: 일본어 묶음이 1위이면 맨 앞(가나)부터, 지금 보이는 것과 같은 후보는 건너뜀 (橋 → はし, はし → ハシ).
 - 한 문절이고 Mozc 후보에 같은 글자가 있으면 그 id로 확정해 Mozc가 학습, 아니면 Mozc를 거치지 않고 그대로 확정.
 
-## A5. 작업 표시줄 검색창 후보창: UIAccess 대행 프로세스 (2026-11-23, 서명 시험 대기)
+## A5. (해결, 개발용 서명으로 확인) 작업 표시줄 검색창 후보창: UIAccess 대행 프로세스 (2026-11-23)
 - `candhost/` → `MultilangIME-CandWin.exe` (매니페스트 uiAccess=true). `tip/src/candwin.rs`를 그대로 컴파일해 같은 모양.
 - TIP는 셸 프로세스(SearchHost, SearchApp, StartMenuExperienceHost, ShellExperienceHost)에서 대행 창이 있으면 WM_COPYDATA(JSON show/hide)로 맡기고, 없거나 실패하면 직접 그린다 (`tip/src/host.rs`). 대행 창은 ChangeWindowMessageFilterEx로 낮은 무결성(AppContainer)의 메시지를 받는다.
 - 백엔드가 ShellExecute로 띄운다 (Program Files 설치본 먼저, 30초마다 확인, 실패 시 간격 늘림). 서명·보안 위치가 아니면 거부(5)되고 로그만 남는다.
 - 확인함: UIAccess 없는 시험 빌드(`CANDHOST_NO_UIACCESS=1`)로 메시지·그리기·쪽 표시·숨기기·한 개만 실행.
-- 남은 것: `tools\uiaccess-dev-setup.ps1`(사용자가 관리자로 실행: 자체 서명 인증서 신뢰 + 서명 + Program Files 복사) 뒤 검색창에서 실제로 위에 뜨는지 확인. 배포판은 정식 서명 필요.
+- 확인함 (2026-11-23): `tools\uiaccess-dev-setup.ps1`(사용자가 관리자로 실행: 자체 서명 인증서 신뢰 + 서명 + Program Files 복사) 뒤 백엔드가 띄우고(ShellExecute 42), 작업 표시줄 검색창에서 후보창이 검색 화면 위에 보임 (사용자 확인).
+- 남은 것: 배포판은 정식 서명(SignPath 등)이 있어야 같은 동작. 개발용 인증서는 시험이 끝나면 `-Remove`로 지운다.
 
 ## B. 품질 (중간 크기)
 
