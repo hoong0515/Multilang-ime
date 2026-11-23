@@ -25,9 +25,13 @@ if (-not $NoBuild) {
 }
 if (-not (Test-Path "third_party\libhangul\hanja.txt")) { & "$Root\tools\fetch-third-party.ps1" }
 
+# the version names a folder under dist\ that is deleted and rebuilt: allow only a plain version string
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$') { throw "invalid -Version: $Version" }
 $Name = "MultilangIME-$Version"
-$Out = Join-Path $Root "dist\$Name"
-if (Test-Path $Out) { Remove-Item $Out -Recurse -Force }
+$Dist = Join-Path $Root "dist"
+$Out = Join-Path $Dist $Name
+if (-not ([IO.Path]::GetFullPath($Out)).StartsWith([IO.Path]::GetFullPath($Dist) + "\")) { throw "output outside dist: $Out" }
+if (Test-Path $Out) { Remove-Item -LiteralPath $Out -Recurse -Force }
 New-Item -ItemType Directory -Force $Out, "$Out\x86", "$Out\licenses", "$Out\mozc\documents" | Out-Null
 
 function Put($from, $to) {

@@ -39,13 +39,53 @@ function Test-RelPath([string]$rel) {
         $rel -notmatch '[:*?"<>|]' -and $rel -notmatch '^[\\/]')
 }
 
-# Folders we never install into (or delete in)
+# Folders we never install into (or delete in): a drive root, these folders themselves, anything under
+# Windows, and a folder that is a junction or symbolic link (it may point anywhere).
 function Test-ForbiddenDest([string]$dest) {
     $dest = Get-FullDir $dest
     $forbidden = @($env:windir, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:USERPROFILE,
         $env:SystemDrive, $env:LOCALAPPDATA, $env:APPDATA, [Environment]::GetFolderPath("Desktop"),
         [Environment]::GetFolderPath("MyDocuments")) | Where-Object { $_ } | ForEach-Object { Get-FullDir $_ }
-    ($dest.Length -le 3) -or ($forbidden -contains $dest)
+    if ($dest.Length -le 3 -or ($forbidden -contains $dest)) { return $true }
+    $win = Get-FullDir $env:windir
+    if ($dest.StartsWith("$win\", [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $item = Get-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+    if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $true }
+    return $false
+}
+
+# A path we may write or delete: inside $dest, and no folder between $dest and it (nor the file itself)
+# is a junction or symbolic link, so a manifest entry cannot lead outside the install folder.
+function Test-SafeTarget([string]$dest, [string]$path) {
+    $dest = Get-FullDir $dest
+    $full = [IO.Path]::GetFullPath($path)
+    if (-not $full.StartsWith("$dest\", [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $p = $full
+    while ($p.Length -gt $dest.Length) {
+        $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+        if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+        $p = Split-Path $p
+    }
+    return $true
+}
+
+# The user signed in at the console (owner of explorer.exe in this session), "DOMAIN\name".
+# When an installer is elevated with a different administrator account, per-user settings
+# (language list, HKCU) would land on that account, so the scripts skip them and say so.
+function Get-InteractiveUser {
+    $sid = (Get-Process -Id $PID).SessionId
+    $ex = Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq $sid } | Select-Object -First 1
+    if (-not $ex) { return $null }
+    $o = Invoke-CimMethod -InputObject $ex -MethodName GetOwner -ErrorAction SilentlyContinue
+    if ($o -and $o.User) { return "$($o.Domain)\$($o.User)" }
+    return $null
+}
+
+function Test-SameUserAsDesktop {
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $desk = Get-InteractiveUser
+    (-not $desk) -or ($desk -ieq $me)
 }
 
 # The relative paths we installed before into $dest (empty for a new or empty folder).
@@ -89,23 +129,27 @@ function Get-OldCopies([string]$dest, [string]$rel) {
 function Install-PackageFiles([string]$src, [string]$dest, [string[]]$previous, [string[]]$exclude) {
     $src = Get-FullDir $src
     $dest = Get-FullDir $dest
+    if (Test-ForbiddenDest $dest) { throw "refusing to install into $dest" }
     $booked = @()
     $files = @(Get-ChildItem -LiteralPath $src -Recurse -File | Where-Object { $exclude -notcontains $_.Name })
     $newList = @($files | ForEach-Object { $_.FullName.Substring($src.Length).TrimStart('\') })
     New-Item -ItemType Directory -Force $dest | Out-Null
     # old copies of our files, and files of the previous version that this one no longer ships
     foreach ($rel in (@($previous) + $newList | Select-Object -Unique)) {
-        foreach ($o in (Get-OldCopies $dest $rel)) { if ((Remove-NowOrAtReboot $o) -eq "booked") { $booked += $o } }
+        foreach ($o in (Get-OldCopies $dest $rel)) {
+            if ((Test-SafeTarget $dest $o) -and (Remove-NowOrAtReboot $o) -eq "booked") { $booked += $o }
+        }
     }
     foreach ($rel in $previous) {
         $p = Join-Path $dest $rel
-        if (($newList -notcontains $rel) -and ($rel -ne $ManifestName) -and (Test-Path -LiteralPath $p -PathType Leaf)) {
+        if (($newList -notcontains $rel) -and ($rel -ne $ManifestName) -and (Test-SafeTarget $dest $p) -and (Test-Path -LiteralPath $p -PathType Leaf)) {
             if ((Remove-NowOrAtReboot $p) -eq "booked") { $booked += $p }
         }
     }
     foreach ($f in $files) {
         $rel = $f.FullName.Substring($src.Length).TrimStart('\')
         $target = Join-Path $dest $rel
+        if (-not (Test-SafeTarget $dest $target)) { throw "refusing to write through a junction or link: $target" }
         New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
         if (Test-Path -LiteralPath $target) {
             try { Remove-Item -LiteralPath $target -Force -ErrorAction Stop }
@@ -134,11 +178,13 @@ function Remove-InstalledFiles([string]$dest, [string[]]$list) {
         $targets = @()
         if (Test-Path -LiteralPath $path -PathType Leaf) { $targets += $path }
         $targets += Get-OldCopies $dest $rel
-        foreach ($t in $targets) { if ((Remove-NowOrAtReboot $t) -eq "booked") { $booked += $t } }
+        foreach ($t in $targets) {
+            if ((Test-SafeTarget $dest $t) -and (Remove-NowOrAtReboot $t) -eq "booked") { $booked += $t }
+        }
     }
     # folders our files were in, deepest first, then $dest itself
     $dirs = @($list | ForEach-Object { Split-Path (Join-Path $dest $_) } | Select-Object -Unique |
-        Where-Object { $_ -ne $dest } | Sort-Object { $_.Length } -Descending) + $dest
+        Where-Object { $_ -ne $dest -and (Test-SafeTarget $dest $_) } | Sort-Object { $_.Length } -Descending) + $dest
     foreach ($d in $dirs) {
         if (-not (Test-Path -LiteralPath $d -PathType Container)) { continue }
         $left = @(Get-ChildItem -LiteralPath $d -Force -Recurse -File | ForEach-Object { $_.FullName })

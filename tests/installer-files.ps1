@@ -145,6 +145,29 @@ public static extern IntPtr LoadLibraryEx(string path, IntPtr file, int flags);
     $null = Remove-InstalledFiles $legacy $l
     Check (-not (Test-Path "$legacy\backend.exe") -and (Test-Path "$legacy\keep.txt")) "legacy uninstall kept keep.txt"
 
+    Write-Host "10b. junctions: a folder link inside the install folder cannot lead outside it"
+    $victim = Join-Path $base "victim"
+    New-Item -ItemType Directory $victim | Out-Null
+    "precious" | Set-Content "$victim\multilang_tip.dll"
+    "precious" | Set-Content "$victim\multilang_tip.dll.old123"
+    $jdest = Join-Path $base "JDest"
+    $null = Install-PackageFiles $pkg $jdest @() @("install.ps1", "install.cmd")
+    Remove-Item "$jdest\x86" -Recurse -Force
+    New-Item -ItemType Junction -Path "$jdest\x86" -Target $victim | Out-Null
+    Check (-not (Test-SafeTarget $jdest "$jdest\x86\multilang_tip.dll")) "target through junction rejected"
+    Check (Test-SafeTarget $jdest "$jdest\backend.exe") "plain target accepted"
+    Check (-not (Test-SafeTarget $jdest "$base\outside.txt")) "target outside rejected"
+    $null = Remove-InstalledFiles $jdest @(Get-Content "$jdest\install-manifest.txt")
+    Check ((Get-Content "$victim\multilang_tip.dll") -eq "precious" -and (Test-Path "$victim\multilang_tip.dll.old123")) "uninstall did not delete through the junction"
+    Check (Throws { Install-PackageFiles $pkg $jdest @() @("install.ps1", "install.cmd") }) "install refuses to write through the junction"
+    Check ((Get-Content "$victim\multilang_tip.dll") -eq "precious") "victim file unchanged after refused install"
+    Remove-Item "$jdest\x86" -Force   # removes the junction only
+    $jlink = Join-Path $base "JLink"
+    New-Item -ItemType Junction -Path $jlink -Target $victim | Out-Null
+    Check (Test-ForbiddenDest $jlink) "install folder that is a junction: forbidden"
+    Remove-Item $jlink -Force
+    Check (Test-ForbiddenDest (Join-Path $env:windir "System32\MultilangIME")) "folder under Windows: forbidden"
+
     Write-Host "11. deleting in a forbidden folder is refused"
     Check (Throws { Remove-InstalledFiles $env:windir @("notepad.exe") }) "Remove-InstalledFiles refuses Windows folder"
 }

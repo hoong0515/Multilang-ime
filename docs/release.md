@@ -60,8 +60,4 @@ powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.
 
 ## 아직 남은 것
 
-- **코드 서명**: 서명 안 된 DLL·exe는 SmartScreen 경고, 일부 보안 제품 차단. 인증서가 필요하다 (무료 오픈소스는 SignPath Foundation 등 검토).
-- **검색창 후보창**: UIAccess 후보창 프로세스. UIAccess는 서명 + 보안 위치(Program Files) 설치가 조건이라 서명과 함께 한다.
-- **설치 프로그램 형식**: 지금은 zip + PowerShell 스크립트. Inno Setup(.exe) 또는 MSI로 감쌀지 결정 (시작 메뉴·프로그램 추가/제거 등록).
-- **Mozc**: 공식 빌드 그대로 배포 중. 자체 빌드 도우미로 바꿀지는 next-tasks C-10.
-- 다른 사용자 계정의 입력 방법 목록에는 자동으로 추가되지 않는다 (각자 설정에서 추가, 프로필은 기본 사용으로 등록됨).
+순서·기준·확인 방법은 `docs/codex-release-plan.md`. 요약: 앱별 실사용 확인표, 설치·업데이트·제거 끝까지 시험, 설치 프로그램 형식(.exe) 결정, 공개 저장소와 CI 첫 실행, 코드 서명(SignPath, 서명되면 검색창 후보창도 배포판에서 동작), 배포 마무리(변경 기록, 문서 갱신).

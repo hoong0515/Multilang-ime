@@ -100,15 +100,22 @@ Step "start menu shortcut" {
 
 # 7. Show the IME under the chosen language only (this user): enable that profile, disable the others,
 #    and put it in that language's input methods (adding the language if it is missing).
-Step "enable the '$Language' profile only" {
+# per-user settings (profile on/off, language list) go to the person signed in; when elevated as another
+# administrator account they would land on that account, so they are skipped with a note
+$perUser = Test-SameUserAsDesktop
+if (-not $perUser) {
+    Write-Host "Elevated as a different account than the signed-in user: skipping the per-user steps."
+    Write-Host "The signed-in user can add Multilang IME in Settings > Time & language > Language."
+}
+if ($perUser) { Step "enable the '$Language' profile only" {
     foreach ($k in $Profiles.Keys) {
         $p = $Profiles[$k]
         $key = "HKCU:\Software\Microsoft\CTF\TIP\$Clsid\LanguageProfile\0x0000$($p[0])\$($p[1])"
         New-Item -Path $key -Force | Out-Null
         New-ItemProperty -Path $key -Name Enable -Value ([int]($k -eq $Language)) -PropertyType DWord -Force | Out-Null
     }
-}
-if (-not $NoLanguageList) {
+} }
+if ($perUser -and -not $NoLanguageList) {
     Step "add input method to the language list ($($Profiles[$Language][2]))" {
         $p = $Profiles[$Language]
         $tip = "$($p[0]):$Clsid$($p[1])"

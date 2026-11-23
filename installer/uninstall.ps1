@@ -28,13 +28,33 @@ if (-not $admin -and -not $DryRun) {
     return
 }
 
-Step "remove input method from the language list" {
+# --- Run only from our own install folder, before anything is changed: the folder registered in
+# Programs and Features, or (registration already gone) a folder with our install manifest. A copy of this
+# script anywhere else (the release zip, a download folder) stops here and changes nothing.
+. (Join-Path $PSScriptRoot "files.ps1")
+$Manifest = Join-Path $Dest $ManifestName
+$isRegisteredHere = $script:registeredDest -and ($script:registeredDest -eq $Dest)
+$isOrphanInstall = (-not $reg) -and (Test-Path -LiteralPath $Manifest)
+if (-not ($isRegisteredHere -or $isOrphanInstall)) {
+    $where = if ($reg) { "the installed copy is in $reg; run uninstall.cmd there" } else { "no Multilang IME install is registered" }
+    Write-Host "This uninstaller is not in the Multilang IME install folder ($where). Nothing was changed."
+    if (-not $DryRun) { exit 1 }
+    return
+}
+# per-user settings (language list, HKCU) belong to the person signed in, not to another admin account
+$perUser = Test-SameUserAsDesktop
+if (-not $perUser) {
+    Write-Host "Elevated as a different account than the signed-in user: the language list and per-user settings"
+    Write-Host "of the signed-in user are left as they are (remove Multilang IME from Settings > Language there)."
+}
+
+if ($perUser) { Step "remove input method from the language list" {
     $list = Get-WinUserLanguageList
     foreach ($l in $list) {
         foreach ($t in @($l.InputMethodTips | Where-Object { $_ -like "*$Clsid*" })) { [void]$l.InputMethodTips.Remove($t) }
     }
     Set-WinUserLanguageList $list -Force
-}
+} }
 Step "remove start menu shortcut" {
     Remove-Item (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Multilang IME Settings.lnk") -Force -ErrorAction SilentlyContinue
 }
@@ -59,19 +79,17 @@ if ($RemoveUserData) {
     }
 }
 
-Step "remove per-user profile settings" {
+if ($perUser) { Step "remove per-user profile settings" {
     Remove-Item "HKCU:\Software\Microsoft\CTF\TIP\$Clsid" -Recurse -Force -ErrorAction SilentlyContinue
-}
+} }
 
 # --- Delete only what the installer put here (installer\files.ps1): the files in install-manifest.txt and
 # their <name>.old<digits> copies. Nothing else in this folder (or anywhere else) is touched; folders go only
 # when empty; files still loaded by apps are deleted at the next reboot.
-. (Join-Path $PSScriptRoot "files.ps1")
-$Manifest = Join-Path $Dest $ManifestName
 $list = @()
 if (Test-Path -LiteralPath $Manifest) {
     $list = @(Get-Content -LiteralPath $Manifest | Where-Object { Test-RelPath $_ })
-} elseif ($script:registeredDest -and ($script:registeredDest -eq $Dest)) {
+} elseif ($isRegisteredHere) {
     $list = $Legacy010
 }
 $script:later = @()
