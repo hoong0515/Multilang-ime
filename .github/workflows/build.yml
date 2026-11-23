@@ -67,7 +67,7 @@ jobs:
       - name: Build x64 and x86
         shell: pwsh
         run: |
-          cargo build --release -p tip -p backend
+          cargo build --release -p tip -p backend -p candhost
           cargo build --release -p tip --target i686-pc-windows-msvc
 
       - name: Settings app
@@ -81,6 +81,7 @@ jobs:
           path: |
             target/release/multilang_tip.dll
             target/release/backend.exe
+            target/release/MultilangIME-CandWin.exe
             target/i686-pc-windows-msvc/release/multilang_tip.dll
             target/settings/MultilangIME-Settings.exe
             data/engine_model.json

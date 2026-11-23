@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod candhost;
 mod hanja;
 mod pipe_security;
 mod session;
@@ -178,6 +179,8 @@ fn main() {
     if let Some(server) = mozc_server_path() {
         session::start_mozc(&server);
     }
+    // 셸 검색창용 후보창 대행 프로세스 (UIAccess, Program Files 설치본)
+    candhost::start();
     let user = std::env::var("USERNAME").unwrap_or_default();
     let name = wide(&ipc::pipe_name(&user));
     log(&format!("started, pipe {}", ipc::pipe_name(&user)));

@@ -42,6 +42,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "776dfebd015e2d8732c684a2c71003674ccb49457b539b9e82151ba38e96dd7c"
 
 [[package]]
+name = "candhost"
+version = "0.1.0"
+dependencies = [
+ "ipc",
+ "serde",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

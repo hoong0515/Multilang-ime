@@ -35,7 +35,7 @@ Step "remove scheduled task" {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 Step "stop backend and Mozc" {
-    Get-Process backend, mozc_server, mozc_stdio -ErrorAction SilentlyContinue |
+    Get-Process backend, mozc_server, mozc_stdio, MultilangIME-CandWin -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($Dest, [StringComparison]::OrdinalIgnoreCase) } |
         Stop-Process -Force
 }

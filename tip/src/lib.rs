@@ -14,6 +14,7 @@
 mod candwin;
 mod client;
 mod display;
+mod host;
 mod uielement;
 
 use std::cell::{Cell, RefCell};
@@ -120,7 +121,7 @@ fn debug_log(what: &str, wparam: WPARAM, lparam: LPARAM) {
 
 /// 진단 로그 한 줄 (MULTILANG_TIP_DEBUG 파일이 있을 때만).
 /// 이 프로세스의 실행 파일 이름 (예: notepad.exe).
-fn app_name() -> String {
+pub(crate) fn app_name() -> String {
     std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default()
 }
 

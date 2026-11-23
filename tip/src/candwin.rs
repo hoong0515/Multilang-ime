@@ -218,11 +218,22 @@ fn ensure_window() -> Option<HWND> {
 
 /// 후보창을 조합 영역(anchor, 화면 좌표) 바로 아래에 띄운다.
 pub fn show(list: &CandidateList, anchor: RECT) {
+    // 셸 검색창 등: 후보창 대행 프로세스(UIAccess)가 있으면 맡긴다 (tip/src/host.rs)
+    #[cfg(not(candhost))]
+    if crate::host::show(Some(list), None, anchor) {
+        hide_local();
+        return;
+    }
     show_inner(list, None, anchor);
 }
 
 /// 조합 창: 조합 문자열(맨 윗줄)과 후보(있으면)를 커서(anchor) 아래에 띄운다. 조합을 입력칸 안에 넣을 수 없는 옛 입력칸용.
 pub fn show_floating(preedit: &str, list: Option<&CandidateList>, anchor: RECT) {
+    #[cfg(not(candhost))]
+    if crate::host::show(list, Some(preedit), anchor) {
+        hide_local();
+        return;
+    }
     let empty = CandidateList::default();
     show_inner(list.unwrap_or(&empty), Some(preedit), anchor);
 }
@@ -230,6 +241,7 @@ pub fn show_floating(preedit: &str, list: Option<&CandidateList>, anchor: RECT) 
 /// 후보창의 소유자를 지금 입력 중인 창(포커스 창의 최상위 창)으로 맞춘다.
 /// 작업 표시줄 검색창 같은 몰입형(immersive) 화면은 일반 창보다 위 층에 그려지므로, 소유자가 없으면
 /// 맨 위(topmost)로 띄워도 그 뒤에 가려진다. 소유된 창은 소유자보다 위, 같은 층에 그려진다.
+#[cfg(not(candhost))]
 fn follow_owner(hwnd: HWND) {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
     let focus = unsafe { GetFocus() };
@@ -258,6 +270,7 @@ fn follow_owner(hwnd: HWND) {
 
 fn show_inner(list: &CandidateList, header: Option<&str>, anchor: RECT) {
     let Some(hwnd) = ensure_window() else { return };
+    #[cfg(not(candhost))]
     follow_owner(hwnd);
     WIN.with(|w| {
         if let Ok(mut w) = w.try_borrow_mut() {
@@ -289,6 +302,12 @@ fn show_inner(list: &CandidateList, header: Option<&str>, anchor: RECT) {
 }
 
 pub fn hide() {
+    #[cfg(not(candhost))]
+    crate::host::hide();
+    hide_local();
+}
+
+fn hide_local() {
     WIN.with(|w| {
         if let Ok(w) = w.try_borrow() {
             if let Some(h) = w.hwnd {
