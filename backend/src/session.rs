@@ -817,7 +817,8 @@ impl<'m> Session<'m> {
     /// 한/영 키: 지금 조합을 확정하고 언어 고정을 다음 상태로 바꾼다.
     pub fn cycle_lock(&mut self, s: &crate::settings::Settings) -> Response {
         let mut r = self.flush();
-        let next = crate::lock::next(crate::lock::get(), s.languages.ko, s.languages.ja);
+        let quick = crate::lock::note_press();
+        let next = crate::lock::press(crate::lock::get(), quick, s.languages.ko, s.languages.ja);
         crate::lock::set(next);
         self.apply_settings(s);
         r.eaten = true;
