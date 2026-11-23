@@ -134,6 +134,25 @@ public static extern IntPtr LoadLibraryEx(string path, IntPtr file, int flags);
     $null = Remove-InstalledFiles $clean @(Get-Content "$clean\install-manifest.txt")
     Check (-not (Test-Path $clean)) "folder removed"
 
+    Write-Host "9b. uninstall with a DLL in use renames it aside, so a reinstall before the reboot is not deleted then"
+    $busy = Join-Path $base "Busy"
+    $null = Install-PackageFiles $pkg $busy @() @("install.ps1", "install.cmd")
+    Copy-Item "$env:windir\System32\version.dll" "$busy\x86\multilang_tip.dll" -Force
+    $h2 = [MLTest.K32]::LoadLibraryEx("$busy\x86\multilang_tip.dll", [IntPtr]::Zero, 0x20)
+    Check ($h2 -ne [IntPtr]::Zero) "stand-in DLL mapped"
+    $booked = Remove-InstalledFiles $busy @(Get-Content "$busy\install-manifest.txt")
+    Check (-not (Test-Path "$busy\x86\multilang_tip.dll")) "the DLL name is free after uninstall"
+    Check (@(Get-ChildItem "$busy\x86" -Filter "multilang_tip.dll.old*").Count -eq 1) "the DLL in use was renamed to .old<ticks>"
+    Check (@($booked | Where-Object { $_ -like "*\multilang_tip.dll" }).Count -eq 0) "the original name is not booked for the reboot"
+    $null = Install-PackageFiles $pkg $busy @() @("install.ps1", "install.cmd")
+    Check ((Get-Content "$busy\x86\multilang_tip.dll") -eq "v2 x86\multilang_tip.dll") "reinstalled DLL in place"
+    if ($admin) {
+        $pend = @((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name PendingFileRenameOperations -ErrorAction SilentlyContinue).PendingFileRenameOperations)
+        Check (@($pend | Where-Object { $_ -like "*\Busy\x86\multilang_tip.dll" }).Count -eq 0) "no reboot delete of the reinstalled DLL (admin)"
+    }
+    [void][MLTest.K32]::FreeLibrary($h2)
+    $null = Remove-InstalledFiles $busy @(Get-Content "$busy\install-manifest.txt")
+
     Write-Host "10. legacy install (no manifest): only when it is the registered folder with our files"
     $legacy = Join-Path $base "Legacy"
     New-Item -ItemType Directory $legacy | Out-Null

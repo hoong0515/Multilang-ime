@@ -115,6 +115,20 @@ function Remove-NowOrAtReboot([string]$path) {
     }
 }
 
+# Delete one of our files; if it is in use, rename it to <name>.old<ticks> first and book that copy for the
+# reboot. Booking the original name instead would delete a file a reinstall puts there before the reboot.
+# Returns the booked path, or "" when the file was deleted (or nothing could be booked).
+function Remove-OrMoveAside([string]$path) {
+    try { Remove-Item -LiteralPath $path -Force -ErrorAction Stop; return "" }
+    catch {
+        $old = "$path.old" + [DateTime]::Now.Ticks
+        try { Rename-Item -LiteralPath $path (Split-Path $old -Leaf) -ErrorAction Stop }
+        catch { $old = $path }   # cannot even rename: book the original name (nothing reinstalled can be in its way)
+        if (Register-DeleteAtReboot $old) { return $old }
+        return ""
+    }
+}
+
 # <name>.old<digits> copies of one of our files, in the same folder
 function Get-OldCopies([string]$dest, [string]$rel) {
     $path = Join-Path $dest $rel
@@ -143,7 +157,8 @@ function Install-PackageFiles([string]$src, [string]$dest, [string[]]$previous, 
     foreach ($rel in $previous) {
         $p = Join-Path $dest $rel
         if (($newList -notcontains $rel) -and ($rel -ne $ManifestName) -and (Test-SafeTarget $dest $p) -and (Test-Path -LiteralPath $p -PathType Leaf)) {
-            if ((Remove-NowOrAtReboot $p) -eq "booked") { $booked += $p }
+            $b = Remove-OrMoveAside $p
+            if ($b) { $booked += $b }
         }
     }
     foreach ($f in $files) {
@@ -175,11 +190,13 @@ function Remove-InstalledFiles([string]$dest, [string[]]$list) {
     $booked = @()
     foreach ($rel in $list) {
         $path = Join-Path $dest $rel
-        $targets = @()
-        if (Test-Path -LiteralPath $path -PathType Leaf) { $targets += $path }
-        $targets += Get-OldCopies $dest $rel
-        foreach ($t in $targets) {
+        # old copies first (already renamed), then the file itself (renamed aside if in use)
+        foreach ($t in (Get-OldCopies $dest $rel)) {
             if ((Test-SafeTarget $dest $t) -and (Remove-NowOrAtReboot $t) -eq "booked") { $booked += $t }
+        }
+        if ((Test-Path -LiteralPath $path -PathType Leaf) -and (Test-SafeTarget $dest $path)) {
+            $b = Remove-OrMoveAside $path
+            if ($b) { $booked += $b }
         }
     }
     # folders our files were in, deepest first, then $dest itself
