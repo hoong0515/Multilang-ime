@@ -34,6 +34,7 @@
    - Codex 재검토(`docs/security-review-2026-11-24.md`) 대응 **[완료]**: 자동 꺼짐 문구, 샌드박스 연결 학습 안 함, 후보창 셸 전체 경로 확인, 프로세스별 연결 상한. 표는 그 문서의 "대응" 절.
 
 1. **실사용 확인표 만들기**
+   - 진행 (2026-11-24): `docs/compat-matrix.md` 첫판. 정상 11(Cubase·원신 수정 포함), 일부 1(한워드, next-tasks A8), 미확인 1(Word). 브라우저 비밀번호 칸 확인.
    - 할 일: 설치판으로 앱별 동작을 표로 기록한다 (`docs/compat-matrix.md` 새로). 앱: 메모장, 워드패드/문자표(옛 입력칸), 카카오톡(32비트, 조합 창), Chrome·Edge·Whale, VS Code, Office(Word), 작업 표시줄 검색창, 관리자 권한 앱, 게임 1개. 항목: 한·영·일 자동 전환, 후보창 위치, Shift 탭, 한/영 고정과 알림, 자동 꺼짐(비밀번호 칸).
    - 기준: 모든 칸에 결과(정상/문제+증상). 문제는 `docs/next-tasks.md`에 항목으로.
    - 확인: 사용자가 직접 치는 것이 필요하다 (자동 입력 도구는 IME를 거치지 않는다). 진단 로그는 DLL 옆 `MULTILANG_TIP_DEBUG` 파일 + `logs\` (Program Files는 관리자 필요).
@@ -62,6 +63,7 @@
    - 참고: Azure Artifact Signing은 국내 개인 불가, Store(MSIX)는 TSF IME에 맞지 않음 (`docs/release.md`).
 
 6. **배포 마무리**
+   - 진행 (2026-11-24): CHANGELOG(v0.1.0 + 다음 판 절), `docs/release.md`(설치 .exe, CI, 릴리스 순서, 시험), `docs/next-tasks.md`(E. 남은 것) 갱신. README 스크린샷은 남음.
    - 버전 0.1.0 확정, `CHANGELOG.md`(또는 릴리스 노트), README 스크린샷, `docs/release.md`의 "아직 남은 것" 갱신, 기획서와 `docs/next-tasks.md` 상태 갱신.
 
 ## 3. 보류·결정 필요 (구현 전에 사용자와 정할 것)

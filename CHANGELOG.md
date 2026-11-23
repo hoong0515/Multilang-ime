@@ -1,5 +1,16 @@
 # Changelog
 
+## 다음 판 (미출시) / Unreleased
+
+- 한/영 고정: 1.5초 안에 연달아 누르면 순환, 고정해 쓰다가 누르면 먼저 자동으로 (`00319e0`)
+- 한/영 키가 없는 키보드: 오른쪽 Alt 단독 탭, 일본어 배열은 半角/全角 키로 언어 고정 (`d677a1e`, 실측 전)
+- 앱 호환: Cubase 플러그인 검색창에서 두 번째부터 조합·후보창이 안 뜨던 문제 (`3ca30ca`),
+  원신 등 커서 위치를 알려 주지 않는 앱은 창 안 클릭 자리나 창 아래쪽에 (`102b7cc`),
+  한워드에서 조합 창이 커서보다 위 줄에 붙던 문제 일부 (`1253317`)
+- 설치·제거: 제거 후 재부팅 전에 다시 설치하면 재부팅 때 새 DLL이 지워지던 문제 (`f90530f`),
+  제거 뒤 TSF 등록 키가 남던 문제, 재부팅 전 재설치 거부, 재부팅 삭제 중복 예약 (`ea7a1d1`)
+- 설치 프로그램 .exe (Inno Setup, 입력 언어 선택) (`548f785`)
+
 ## v0.1.0 (2026-11-24)
 
 첫 공개 판. First public release.
@@ -23,7 +34,7 @@
 - 이 판은 서명되지 않았다. Windows SmartScreen 경고가 뜰 수 있고, 작업 표시줄 검색창의 후보창은 가려진다(입력은 됨). 서명은 SignPath Foundation에 신청 예정 ([Code signing policy](docs/code-signing-policy.md)).
   This release is unsigned: SmartScreen may warn, and the candidate window in the taskbar search box stays hidden (typing works).
 - 앱이 입력칸 용도를 알려 주지 않는 비밀번호 칸에서는 자동으로 꺼지지 않을 수 있다 (한/영 키로 English 고정).
-- `to-do`, `so-so`처럼 양쪽이 모두 로마자로 읽히는 영어 하이픈 단어는 일본어가 1순위가 될 수 있다 (영어는 후보에 있음).
+- `to-do`, `so-so`처럼 양쪽이 모두 로마자로 읽히는 영어 하이픈 단어는 처음에 일본어가 1순위가 될 수 있다. 후보에서 영어를 한 번 고르면 학습되어 다음부터 영어로 나온다.
 - 한/영 키가 없는 키보드의 언어 고정 키, 설정 화면에서 등록 언어 바꾸기는 아직 없다.
 
 ### 보안 / Security

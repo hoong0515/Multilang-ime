@@ -3,11 +3,12 @@
 ## 만들기
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.1.0
+powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.1.0 -Setup
 ```
 
-- x64(`tip`, `backend`)와 x86(`tip`)을 빌드해 `dist\MultilangIME-<버전>\`에 모으고 zip과 SHA-256을 만든다.
-- 넣는 것: TIP DLL(x64 루트, 32비트는 `x86\`), `backend.exe`, `engine_model.json`, `hanja.txt`, `mozc\`(공식 MSI에서 꺼낸 mozc_server와 VC 런타임, 학습 DB는 빼고), `LICENSE.txt`(GPL-3.0), `THIRD-PARTY-NOTICES.md`, `licenses\`, 사용자용 `README.md`(`installer\README-install.md`), 설치·제거 스크립트.
+- x64(`tip`, `backend`, `candhost`)와 x86(`tip`)을 빌드해 `dist\MultilangIME-<버전>\`에 모으고 zip과 SHA-256을 만든다. `-Setup`이면 설치 프로그램 `MultilangIME-<버전>-setup.exe`(Inno Setup 6, `installer\MultilangIME.iss`)와 그 SHA-256도.
+- 설치 .exe는 릴리스 폴더를 임시 폴더에 풀고 고른 입력 언어로 `install.ps1`을 실행하는 껍데기다. 제거는 앱 및 기능의 `uninstall.ps1`. 조용히: `/VERYSILENT /INPUTLANG=ko|ja|en`.
+- 넣는 것: TIP DLL(x64 루트, 32비트는 `x86\`), `backend.exe`, `engine_model.json`, `hanja.txt`, `mozc\`(직접 빌드한 `mozc_stdio.exe`와 VC 런타임), `LICENSE.txt`(GPL-3.0), `THIRD-PARTY-NOTICES.md`, `licenses\`, 사용자용 `README.md`(`installer\README-install.md`), 설치·제거 스크립트.
 - 설정 화면 `MultilangIME-Settings.exe`도 함께 빌드해 넣는다 (`settingsuild.ps1`).
 - 재료: `data\engine_model.json`(`python -m ime_v0.export_model`), `third_party\libhangul\hanja.txt`(`tools\fetch-third-party.ps1`), `target\mozc-helper\mozc_stdio.exe`와 Mozc의 `credits_en.html`(`mozc-helper\build.ps1`), VS redist의 VC 런타임.
 
@@ -15,14 +16,14 @@ powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.
 
 | 작업 | 언제 | 내용 |
 | --- | --- | --- |
-| core | 모든 push·PR | 모델 데이터 생성(`requirements-model.txt`, Python 3.10, `data/model_params.json`), `tools\fetch-third-party.ps1`(libhangul hanja.txt, 커밋 고정 + SHA-256), `cargo test`(engine·ipc·backend), x64·x86 빌드, 설정 화면 |
+| core | 모든 push·PR | 모델 데이터 생성(`requirements-model.txt`, Python 3.10, `data/model_params.json`), `tools\fetch-third-party.ps1`(libhangul hanja.txt, 커밋 고정 + SHA-256), `cargo test`(engine·ipc·backend·tip, candhost는 `CANDHOST_NO_UIACCESS=1`), x64·x86 빌드, 설정 화면, 설치기 시험 |
 | mozc | `v*` 태그, 수동 실행 | Mozc 소스(커밋 고정 `MOZC_COMMIT`) + `update_deps.py` + `mozc-helper\build.ps1`, Bazel 디스크 캐시 |
-| package | mozc 뒤 | `installer\build-release.ps1 -NoBuild` → `release` 아티팩트(zip + sha256). VC 런타임은 VS redist에서 |
+| package | mozc 뒤 | Inno Setup 준비(없으면 choco) → `installer\build-release.ps1 -NoBuild -Setup` → `release` 아티팩트(zip, 설치 .exe, sha256). 태그 빌드는 태그 버전, 수동 실행은 `0.0.0-dev.<번호>` |
 
 - 액션은 커밋 SHA로 고정 (Mozc 저장소와 같은 방식).
 - git에 없는 입력은 모두 CI에서 다시 만든다: 모델(개발용과 같은 바이트 확인), hanja.txt(체크섬), Mozc 도우미(고정 커밋 소스 빌드).
 - 코드 서명(SignPath 등)은 이 `release` 아티팩트(또는 그 안의 exe/dll)를 서명 단계에 넘기는 식으로 붙인다.
-- 아직 GitHub에서 실제로 돌려 보지 않았다 (원격 저장소 없음). 로컬에서는 `build-release.ps1`와 YAML 구문만 확인.
+- 공개 저장소 https://github.com/hoong0515/Multilang-ime 에서 동작 확인 (2026-11-24). v0.1.0 릴리스 파일은 태그 빌드 45243627966의 결과물.
 
 ## 설치 스크립트 (`installer\install.ps1`)
 
@@ -58,6 +59,18 @@ powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.
 - 입력기 이름은 "Multilang IME" (개발판 등록에 남은 "(dev)"는 다시 등록할 때 바뀐다).
 - 설치 스크립트가 "앱 및 기능"(Uninstall 키)에 등록하고, 제거 스크립트가 지운다.
 
+## 릴리스 순서
+
+1. `CHANGELOG.md`의 "다음 판" 절을 버전 절로 바꾸고 커밋, push.
+2. `git tag -a v<버전> -m "Multilang IME <버전>"` 후 태그 push → CI가 태그 버전으로 zip·설치 .exe·sha256을 만든다.
+3. 태그 빌드의 `release` 아티팩트로 GitHub 릴리스 초안(설치 방법, 알려진 제한, "Code signing policy" 절, SHA-256) → 확인 후 공개.
+
+## 시험
+
+- `tests\installer-files.ps1`: 설치·제거 파일 처리 (임시 폴더, CI에서도).
+- `tests\install-cycle.ps1` (관리자): 이 PC에서 재설치 → 제거 → 설치, 등록·작업·바로 가기·언어 목록·파일 확인. 재부팅 뒤 `-AfterReboot`.
+- 앱별 실사용: `docs/compat-matrix.md`.
+
 ## 아직 남은 것
 
-순서·기준·확인 방법은 `docs/codex-release-plan.md`. 요약: 앱별 실사용 확인표, 설치·업데이트·제거 끝까지 시험, 설치 프로그램 형식(.exe) 결정, 공개 저장소와 CI 첫 실행, 코드 서명(SignPath, 서명되면 검색창 후보창도 배포판에서 동작), 배포 마무리(변경 기록, 문서 갱신).
+`docs/codex-release-plan.md` 참고. 요약: SignPath Foundation 신청(사용자) → 승인 후 CI 서명 단계와 서명판 릴리스(검색창 후보창은 서명판에서만 보임), 오른쪽 Alt·半角/全角 실측, 확인표의 남은 칸.
