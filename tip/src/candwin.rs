@@ -21,7 +21,13 @@ struct Win {
     list: CandidateList,
     /// 조합 창 모드: 맨 윗줄에 보이는 조합 문자열 (옛 입력칸용)
     header: Option<String>,
+    /// 잠깐 보이는 알림 (한/영 키로 바꾼 입력 언어 고정 상태): 밑줄 없이, 시간이 지나면 숨긴다
+    toast: bool,
 }
+
+/// 알림을 숨기는 타이머
+const TOAST_TIMER: usize = 0x4D4C;
+const TOAST_MS: u32 = 1200;
 
 thread_local! {
     static WIN: RefCell<Win> = RefCell::new(Win::default());
@@ -88,7 +94,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
             WIN.with(|w| {
                 if let Ok(w) = w.try_borrow() {
-                    paint(hwnd, hdc, &w.list, w.header.as_deref());
+                    paint(hwnd, hdc, &w.list, w.header.as_deref(), w.toast);
                 }
             });
             unsafe {
@@ -97,11 +103,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_TIMER if wparam.0 == TOAST_TIMER => {
+            unsafe {
+                let _ = KillTimer(Some(hwnd), TOAST_TIMER);
+            }
+            let still_toast = WIN.with(|w| w.try_borrow().map(|w| w.toast).unwrap_or(false));
+            if still_toast {
+                hide_local();
+            }
+            LRESULT(0)
+        }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
 
-fn paint(hwnd: HWND, hdc: HDC, list: &CandidateList, header: Option<&str>) {
+fn paint(hwnd: HWND, hdc: HDC, list: &CandidateList, header: Option<&str>, toast: bool) {
     let mut rc = RECT::default();
     unsafe {
         let _ = GetClientRect(hwnd, &mut rc);
@@ -138,8 +154,10 @@ fn paint(hwnd: HWND, hdc: HDC, list: &CandidateList, header: Option<&str>) {
                 let _ = TextOutW(hdc, pad, y + pad / 2, main);
                 let mut sz = SIZE::default();
                 let _ = GetTextExtentPoint32W(hdc, main, &mut sz);
-                let u = RECT { left: pad, top: y + pad / 2 + sz.cy - 1, right: pad + sz.cx, bottom: y + pad / 2 + sz.cy };
-                FillRect(hdc, &u, GetSysColorBrush(COLOR_WINDOWTEXT));
+                if !toast {
+                    let u = RECT { left: pad, top: y + pad / 2 + sz.cy - 1, right: pad + sz.cx, bottom: y + pad / 2 + sz.cy };
+                    FillRect(hdc, &u, GetSysColorBrush(COLOR_WINDOWTEXT));
+                }
                 if !list.items.is_empty() {
                     let d = RECT { left: 1, top: y + line_h - 1, right: rc.right - 1, bottom: y + line_h };
                     FillRect(hdc, &d, GetSysColorBrush(COLOR_BTNSHADOW));
@@ -268,7 +286,26 @@ fn follow_owner(hwnd: HWND) {
     }
 }
 
+/// 커서(anchor) 아래에 짧은 알림을 잠깐 보인다 (한/영 키로 바꾼 입력 언어 고정 상태).
+#[allow(dead_code)] // the candidate host (candhost/) does not show toasts
+pub fn show_toast(text: &str, anchor: RECT) {
+    show_inner_mode(&CandidateList::default(), Some(text), anchor, true);
+    WIN.with(|w| {
+        if let Ok(w) = w.try_borrow() {
+            if let Some(h) = w.hwnd {
+                unsafe {
+                    SetTimer(Some(h), TOAST_TIMER, TOAST_MS, None);
+                }
+            }
+        }
+    });
+}
+
 fn show_inner(list: &CandidateList, header: Option<&str>, anchor: RECT) {
+    show_inner_mode(list, header, anchor, false);
+}
+
+fn show_inner_mode(list: &CandidateList, header: Option<&str>, anchor: RECT, toast: bool) {
     let Some(hwnd) = ensure_window() else { return };
     #[cfg(not(candhost))]
     follow_owner(hwnd);
@@ -276,6 +313,7 @@ fn show_inner(list: &CandidateList, header: Option<&str>, anchor: RECT) {
         if let Ok(mut w) = w.try_borrow_mut() {
             w.list = list.clone();
             w.header = header.map(str::to_string);
+            w.toast = toast;
         }
     });
     let (width, line_h, pad) = measure(hwnd, list, header);
@@ -283,7 +321,7 @@ fn show_inner(list: &CandidateList, header: Option<&str>, anchor: RECT) {
     let height = line_h * rows as i32 + pad;
     // 조합 창(header): 맨 윗줄의 조합 글자가 커서 자리에 겹쳐 보이게 (입력칸에 직접 치는 것처럼),
     // 후보는 그 아래로 이어진다. 글자 상자는 창 안 (pad, pad)에서 시작하고 높이는 line_h - pad.
-    let overlay = header.is_some();
+    let overlay = header.is_some() && !toast;
     let (mut x, mut y) = if overlay {
         let caret_mid = (anchor.top + anchor.bottom) / 2;
         (anchor.left - pad, caret_mid - pad - (line_h - pad) / 2)

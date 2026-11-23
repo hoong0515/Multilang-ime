@@ -135,6 +135,9 @@ pub(crate) fn debug_note(what: &str) {
     debug_log(what, WPARAM(0), LPARAM(0));
 }
 
+/// 한/영 키
+const VK_HANGUL: u16 = 0x15;
+
 fn is_modifier_vk(vk: u16) -> bool {
     matches!(vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0xA0..=0xA5)
 }
@@ -466,6 +469,36 @@ impl TextService_Impl {
         self.ui_own.set(true);
     }
 
+    /// 한/영 키 뒤: 바뀐 입력 언어 고정 상태를 커서 아래에 잠깐 보인다.
+    fn toast_lock(&self, ctx: &ITfContext, r: &Response) {
+        let Some(ind) = &r.indicator else { return };
+        let name = match ind.lang.as_str() {
+            "en" => "English",
+            "ja" => "日本語",
+            _ => "한국어",
+        };
+        let text = if !ind.locked {
+            "자동 전환".to_string()
+        } else if ind.lang == "en" {
+            "English 고정 (IME 끔)".to_string()
+        } else {
+            format!("{name} 고정")
+        };
+        let Ok(client_id) = self.state.try_borrow().map(|s| s.client_id) else { return };
+        let out = Rc::new(Cell::new(None));
+        let session: ITfEditSession = CaretSession { context: ctx.clone(), out: out.clone() }.into();
+        let _ = unsafe { ctx.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READ) };
+        // 커서 위치를 못 읽으면 마지막 조합 위치, 그것도 없으면 마우스 위치
+        let anchor = out.take().or_else(|| self.state.try_borrow().ok().and_then(|s| s.anchor)).unwrap_or_else(|| {
+            let mut p = windows::Win32::Foundation::POINT::default();
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p);
+            }
+            RECT { left: p.x, top: p.y, right: p.x + 1, bottom: p.y + 16 }
+        });
+        candwin::show_toast(&text, anchor);
+    }
+
     /// 지금 입력칸에서 IME를 꺼야 하는가: 앱이 키보드를 꺼 둔 문맥, 빈 문맥, 또는 비밀번호·숫자 등 용도의 칸.
     fn input_off(&self, context: &ITfContext) -> bool {
         if compartment_on(context, &GUID_COMPARTMENT_KEYBOARD_DISABLED) || compartment_on(context, &GUID_COMPARTMENT_EMPTYCONTEXT) {
@@ -686,6 +719,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         }
         self.track(key, &r, window_was_open);
         self.apply(ctx, &r)?;
+        if key.vk == VK_HANGUL {
+            self.toast_lock(ctx, &r);
+        }
         Ok(true.into())
     }
 
@@ -894,6 +930,31 @@ fn compartment_on(context: &ITfContext, guid: &GUID) -> bool {
         Ok(on)
     })()
     .unwrap_or(false)
+}
+
+/// 커서(선택 영역)의 화면 위치를 읽는 읽기 전용 편집 세션 (한/영 알림 위치).
+#[implement(ITfEditSession)]
+struct CaretSession {
+    context: ITfContext,
+    out: Rc<Cell<Option<RECT>>>,
+}
+
+impl ITfEditSession_Impl for CaretSession_Impl {
+    fn DoEditSession(&self, ec: u32) -> Result<()> {
+        let mut sel = [TF_SELECTION::default()];
+        let mut n = 0u32;
+        unsafe { self.context.GetSelection(ec, TF_DEFAULT_SELECTION, &mut sel, &mut n)? };
+        if n == 0 {
+            return Ok(());
+        }
+        let Some(range) = (unsafe { ManuallyDrop::take(&mut sel[0].range) }) else { return Ok(()) };
+        let view = unsafe { self.context.GetActiveView()? };
+        let mut rc = RECT::default();
+        let mut clipped = BOOL::default();
+        unsafe { view.GetTextExt(ec, &range, &mut rc, &mut clipped)? };
+        self.out.set(Some(rc));
+        Ok(())
+    }
 }
 
 /// 커서 자리의 입력칸 용도(InputScope)를 읽는 읽기 전용 편집 세션.
