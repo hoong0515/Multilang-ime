@@ -1,6 +1,8 @@
 # Assemble the release folder and zip under dist\ (used locally and by .github/workflows/build.yml).
 #   powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 [-Version 0.1.0] [-NoBuild]
-#       [-MozcHelper target\mozc-helper\mozc_stdio.exe] [-MozcCredits <Mozc>\src\data\installer\credits_en.html]
+#       [-MozcHelper target\mozc-helper\mozc_stdio.exe] [-MozcCredits <Mozc>\src\data\installer\credits_en.html] [-Setup]
+# -Setup also builds dist\MultilangIME-<ver>-setup.exe from installer\MultilangIME.iss (Inno Setup 6; ISCC from
+#   $env:ISCC or the usual install folders).
 # Inputs that are not in git:
 #   data\engine_model.json     python -m ime_v0.export_model data\model_params.json   (requirements-model.txt)
 #   third_party\libhangul\hanja.txt   tools\fetch-third-party.ps1 (pinned upstream, checksum verified)
@@ -10,7 +12,8 @@ param(
     [string]$Version = "0.1.0",
     [switch]$NoBuild,
     [string]$MozcHelper = "target\mozc-helper\mozc_stdio.exe",
-    [string]$MozcCredits = "K:\mozc-build\mozc\src\data\installer\credits_en.html"
+    [string]$MozcCredits = "K:\mozc-build\mozc\src\data\installer\credits_en.html",
+    [switch]$Setup
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent
@@ -70,3 +73,16 @@ $hash = (Get-FileHash $Zip -Algorithm SHA256).Hash
 "$hash  $Name-win.zip" | Set-Content "$Zip.sha256" -Encoding ascii
 Write-Host "release: $Zip"
 Write-Host "sha256:  $hash"
+
+if ($Setup) {
+    $iscc = @($env:ISCC, "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    if (-not $iscc) { throw "Inno Setup 6 (ISCC.exe) not found; set `$env:ISCC" }
+    & $iscc /Qp "/DVersion=$Version" "/DPkgDir=$Out" "/DOutDir=$Dist" (Join-Path $Root "installer\MultilangIME.iss")
+    if ($LASTEXITCODE) { throw "setup build failed" }
+    $Exe = Join-Path $Dist "$Name-setup.exe"
+    $exeHash = (Get-FileHash $Exe -Algorithm SHA256).Hash
+    "$exeHash  $Name-setup.exe" | Set-Content "$Exe.sha256" -Encoding ascii
+    Write-Host "setup:   $Exe"
+    Write-Host "sha256:  $exeHash"
+}

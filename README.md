@@ -20,7 +20,7 @@ A Windows IME that detects Korean, English and Japanese as you type, with no swi
 
 ## 설치
 
-릴리스 zip을 풀고 `install.cmd`를 실행한다 (관리자 권한). 자세한 사용법·키·설정은 [installer/README-install.md](installer/README-install.md).
+릴리스의 `MultilangIME-<버전>-setup.exe`를 실행한다 (관리자 권한, 입력 언어 선택). 또는 zip을 풀고 `install.cmd`. 자세한 사용법·키·설정은 [installer/README-install.md](installer/README-install.md).
 
 | 키 | 동작 |
 | --- | --- |

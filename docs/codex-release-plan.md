@@ -45,7 +45,7 @@
    - 진행 (2026-11-24): `tests/install-cycle.ps1`(관리자)로 (a) 재설치 (b) 제거 (d) 다시 설치 **통과**. 첫 실행에서 찾은 문제 3개 고침(ea7a1d1): 제거 뒤 TSF 등록 키 남음, 재부팅 전 재설치 거부, 재부팅 삭제 중복 예약. 그 전에 찾은 것(f90530f): 제거 때 쓰는 중 DLL을 원래 이름으로 예약해 재부팅 전 재설치한 DLL이 재부팅 때 지워짐. 재부팅 예약에는 `.old` 사본과 (비어 있지 않아 지워지지 않을) `x86` 폴더만 남음. 남은 것: (c) 재부팅 뒤 `install-cycle.ps1 -AfterReboot`, (e) `-Language en`/`ja` **[사용자]**.
 
 3. **설치 프로그램 형식 결정과 포장** **[사용자]**
-   - **설치 .exe로 결정(사용자, 2026-11-24)**, CI 통과 후 구현 (권장안 (b) Inno Setup이 기존 스크립트를 부르는 방식).
+   - **설치 .exe로 결정(사용자, 2026-11-24)**. 구현: `installer/MultilangIME.iss` (Inno Setup 6). 패키지를 임시 폴더에 풀고 고른 언어로 `install.ps1` 실행, 기존 설치 감지(버전 표시), `/VERYSILENT /INPUTLANG=ko|ja|en`. 자체 제거 프로그램은 만들지 않고 앱 및 기능의 `uninstall.ps1`을 그대로 씀. `build-release.ps1 -Setup`, CI package 작업에서 빌드(러너에 없으면 choco로 설치). 남은 확인: 실제 설치 화면·업데이트·실패 시 메시지.
    - 선택지: (a) 지금처럼 zip + `install.cmd`, (b) Inno Setup .exe가 같은 스크립트를 부름(언어 고르기 화면, 관리자 요청, 제거는 기존 `uninstall.ps1`), (c) MSI(WiX).
    - 권장: (b). 스크립트 로직(`files.ps1`의 안전 규칙)을 그대로 쓰고 감싸기만 한다. Inno Setup 설치(다운로드)는 사용자 승인 필요.
    - 기준: .exe 하나로 설치·제거, 언어 선택, 업그레이드 시 기존 설치 감지. CI의 package 작업에 .exe 빌드 추가.

@@ -1,7 +1,7 @@
 # Build Multilang IME on GitHub Actions.
 # - core (every push / PR): model data, Rust x64 + x86, tests, settings app.
 # - mozc + package (tags v* and manual runs): Mozc stdio helper from the pinned Mozc source,
-#   then the release zip. The zip is the input for code signing (docs/release.md).
+#   then the release zip and the setup exe (Inno Setup). The zip is the input for code signing (docs/release.md).
 name: build
 
 on:
@@ -161,13 +161,21 @@ jobs:
           name: mozc-helper
           path: mozc-artifact
 
-      - name: Release zip
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $known = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $known)) { choco install innosetup --no-progress -y }
+          if (-not (Test-Path $known)) { throw "Inno Setup not available" }
+          "ISCC=$known" >> $env:GITHUB_ENV
+
+      - name: Release zip and setup
         shell: pwsh
         run: |
           $version = if ("${{ github.ref }}".StartsWith("refs/tags/v")) { "${{ github.ref_name }}".Substring(1) } else { "0.0.0-dev.${{ github.run_number }}" }
           $helper = Get-ChildItem mozc-artifact -Recurse -Filter mozc_stdio.exe | Select-Object -First 1
           $credits = Get-ChildItem mozc-artifact -Recurse -Filter credits_en.html | Select-Object -First 1
-          ./installer/build-release.ps1 -Version $version -NoBuild -MozcHelper $helper.FullName -MozcCredits $credits.FullName
+          ./installer/build-release.ps1 -Version $version -NoBuild -MozcHelper $helper.FullName -MozcCredits $credits.FullName -Setup
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
@@ -175,4 +183,5 @@ jobs:
           if-no-files-found: error
           path: |
             dist/*.zip
+            dist/*.exe
             dist/*.sha256

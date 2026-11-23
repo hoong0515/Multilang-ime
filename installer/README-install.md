@@ -5,6 +5,10 @@ GPL-3.0-or-later 자유 소프트웨어입니다 (`LICENSE.txt`, 제3자 구성 
 
 ## 설치
 
+설치 프로그램 `MultilangIME-<버전>-setup.exe`를 실행하면 입력 언어(한국어·日本語·English)를 고른 뒤 아래 과정을 대신 해 줍니다. 조용히 설치: `MultilangIME-<버전>-setup.exe /VERYSILENT /INPUTLANG=ko`.
+
+zip으로 설치할 때:
+
 1. 압축을 풉니다.
 2. `install.cmd`를 실행하고 관리자 권한 요청(UAC)을 허용합니다.
    - `C:\Program Files\MultilangIME`에 복사하고, 64비트·32비트 입력기를 등록합니다.
