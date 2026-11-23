@@ -1,6 +1,6 @@
 # 다음 작업 목록 (2026-11-23 기준)
 
-현재 상태: v1 M1~M4 완료, M5 진행 중. 사용자 평가로는 기본 동작(한·영·일 자동 전환, 후보창, 일본어 Mozc 변환)은 원하는 대로 된다. 남은 것은 아래 순서로 진행한다.
+현재 상태: v1 M1~M4 완료, M5 진행 중, 배포 준비 일부 완료 (`docs/release.md`). 사용자 평가로는 기본 동작(한·영·일 자동 전환, 후보창, 일본어 Mozc 변환)은 원하는 대로 된다. 남은 것은 아래 순서로 진행한다.
 
 ## A0. 새로 발견 (2026-11-23, 우선)
 - **(해결, 조합 창) 옛 Win32 입력칸(CUAS 경유)에서 조합이 키마다 끊김** — README "옛 Win32 입력칸: 조합 창".: WinForms TextBox 등에서 미리보기가 d → k → s처럼 한 글자씩만 나오고 그대로 들어간다. 조합이 끝났다는 알림(OnCompositionTerminated) → reset으로 백엔드가 매번 처음부터 시작하는 것으로 추정. 메모장은 정상. 많은 앱이 옛 입력칸을 쓰므로 배포 전에 꼭 고쳐야 한다. 시험 창: `tools/ImeScopeTest.cs`.
@@ -47,19 +47,21 @@
    - 우회: 글꼴. 설치 글꼴 확인 결과 (한 気 ー あ 学): 맑은 고딕 O x x O x, Noto Sans KR O O O O O, Yu Gothic·Meiryo·BIZ UD·Noto Sans JP는 한글 없음. 메모장 글꼴을 Noto Sans KR(또는 Noto Sans CJK KR, 본고딕)로 하면 한국어 프로필 그대로 일본어도 그려질 것으로 예상 — 메모장 실측: 사용자가 메모장 글꼴을 Noto Sans KR로 바꾸니 잘 표시됨 (2026-11-23). → 설치 안내에 "한·일 글자가 모두 있는 글꼴(Noto Sans KR, 본고딕 등)" 권장을 넣는다.
    - 가짜 입력 언어 알림 실험 (2026-11-23): 일본어를 넣기 직전 RichEdit 창(RichEditD2DPT)에 WM_INPUTLANGCHANGE(SHIFTJIS_CHARSET, HKL 0x04110411)를 보냈지만 효과 없음 — 메모장은 알림이 아니라 실제 키보드 언어를 본다. 코드 되돌림. 남은 우회는 API 가로채기(권하지 않음)뿐이라 글꼴 안내로 확정.
    - 원인: 앱이 입력 중인 프로필의 언어로 글꼴을 고른다. 우리 TIP는 한국어 프로필이라 気·ー 등이 맑은 고딕으로 그려져 깨진다. `GUID_PROP_LANGID`는 무시된다.
-   - 시험할 것: 일본어 구간을 넣을 때 같은 TIP의 일본어 프로필로 전환 (`ITfInputProcessorProfileMgr::ActivateProfile`). 조합이 끊기지 않는지, 전환 깜빡임이 없는지 확인.
-   - 대안: 기본 프로필을 일본어로 (한국어는 조합 중에만 네모, 확정 후 정상).
+   - (시도했으나 실패, 위 기록) 일본어 구간에서 같은 TIP의 일본어 프로필로 전환.
+   - (채택 안 함) 기본 프로필을 일본어로 (한국어는 조합 중에만 네모, 확정 후 정상).
 6. **(완료, 설정 옵션) 일본어 긴 단위 변환** — `settings.json`의 `"ja_space": "continue"`. 기본값은 기존 방식(확정, 이제 + 전각 공백). README "설정 파일과 일본어 Space".
    - 문장 통째 변환이 문절별보다 낫다 (뉴스 글자 오류율 17.5→16.5%, Tatoeba 9.9→7.4%). 앞 문맥 넘기기는 효과 없음.
-   - 일본어 구간은 Space에서 바로 확정하지 않고 구두점·Enter까지 조합으로 이어 가는 방식을 검토. Space=확정 원칙과 충돌하므로 사용자 결정 필요.
+   - 일본어 구간을 구두점·Enter까지 이어 가는 방식은 Space=확정 원칙과 충돌 → 사용자 결정으로 기본은 확정, `continue`는 선택 옵션.
 7. **(완료, 부분 변환) 긴 토큰 후보 품질**: 2위 이하 후보가 토큰 전체 단위라 질이 낮다. 구간(문절) 단위 후보 고르기.
 8. **(완료, 부분 변환 ←/→) 여러 문절 일본어 토큰**: 첫 문절 말고 다른 문절의 후보 고르기 (←→로 문절 이동 등, 1번 방향키와 키 배정 조율).
 
 ## C. 배포 준비
 
-9. **(완료) 라이선스 확정** — `LICENSE`(GPL-3.0 원문), `THIRD-PARTY-NOTICES.md`. 이전 메모:: GPL-3.0-or-later 전제 (기획서의 "라이선스 미정" 갱신, LICENSE·THIRD-PARTY-NOTICES 작성: Mozc BSD-3, wordfreq 데이터 CC BY-SA 4.0, Rust 크레이트 MIT/Apache).
+9. **(완료) 라이선스**: GPL-3.0-or-later. `LICENSE`(원문), `THIRD-PARTY-NOTICES.md`(Mozc BSD-3, VC 런타임, libhangul 한자 사전 BSD-3, wordfreq 데이터 CC BY-SA 4.0, Rust 크레이트 MIT/Apache). 기획서의 "라이선스 미정"은 아직 갱신 안 함.
 10. **Mozc 배포 방식**: 지금은 공식 MSI에서 꺼낸 mozc_server를 쓴다. Meltype처럼 Mozc를 직접 빌드한 도우미(stdin/stdout)로 바꾸면 실행 문제(가장 토큰, 패키지 앱 문맥)와 브랜딩이 풀린다. Bazel 빌드 30~40분.
-11. **(부분 완료, `docs/release.md`) 설치 프로그램** — zip + `installer\install.ps1`(x64·x86 등록, 앱 컨테이너 읽기 권한, UI-less 카테고리, Users 그룹 작업, 언어 목록). 남은 것: 코드 서명, UIAccess 후보창, .exe/MSI 포장. 이전 메모: (작업 표시줄 검색창 후보창: 별도 후보창 프로세스 + UIAccess가 필요해 서명·Program Files 설치와 함께 처리. 배포 폴더에 ALL APPLICATION PACKAGES 읽기 권한, UI-less 카테고리 등록도 포함): TIP 등록(32/64비트), 언어 목록 추가, 작업 스케줄러 백엔드, 제거. Inno Setup 검토. 코드 서명.
+11. **(부분 완료) 설치 프로그램** — 절차는 `docs/release.md`.
+    - 완료: zip 패키지(`installeruild-release.ps1`), `install.ps1`/`uninstall.ps1` — Program Files 복사, 64·32비트 등록, 앱 컨테이너 읽기 권한, UI-less 카테고리, Users 그룹 로그온 작업, 한국어 입력 목록 추가. 시험 실행(-DryRun)만 했고 실제 설치는 아직.
+    - 남은 것: 실제 설치 시험, 코드 서명, 작업 표시줄 검색창용 UIAccess 후보창 프로세스(서명·Program Files 설치가 조건), .exe(Inno Setup)/MSI 포장 여부 결정(시작 메뉴·프로그램 추가/제거 등록).
 12. **설정 화면 최소판**: 사용할 언어 선택, 자동 꺼짐 앱 목록, 학습 기록 지우기, 일본어 Space(`ja_space`). 지금은 `settings.json` 직접 편집.
 13. **(완료, 입력칸 부분) 자동 꺼짐**: 비밀번호·숫자·이메일·URL 칸, 꺼진 문맥 (README "자동 꺼짐"). 남은 것: 관리자 앱, 게임, 앱별 목록(설정 화면과 함께).
 
