@@ -43,7 +43,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, HKL, VK_CAPITAL, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::TextServices::*;
-use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowLongW, GWL_STYLE};
+use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetParent, GetWindowLongW, GWL_STYLE};
 
 // ---------------------------------------------------------------- 식별자
 pub const CLSID_TEXT_SERVICE: GUID = GUID::from_u128(0x05c49e35_3b3f_4bc3_8d48_ef1336f9cd4d);
@@ -305,7 +305,7 @@ impl TextService_Impl {
 
     /// 동기 편집 세션으로 응답(확정·조합)을 문서에 반영한다 (키 이벤트 콜백 안에서만 호출).
     fn apply(&self, context: &ITfContext, resp: &Response) -> Result<()> {
-        let floating = transitory(context);
+        let floating = legacy_floating(context);
         let atoms = self.atoms();
         let client_id = self.state.try_borrow().map(|s| s.client_id).map_err(|_| E_FAIL)?;
         let sink: ITfCompositionSink = self.to_interface();
@@ -644,10 +644,53 @@ const OFF_SCOPES: &[i32] = &[
     IS_ALPHANUMERIC_PIN.0,
 ];
 
-/// CUAS를 거치는 옛 Win32 입력칸의 문맥인가 (TS_SS_TRANSITORY). 이런 칸은 한국어 프로필에서 조합 글자를
-/// 한 글자(interim)만 허용해 여러 글자 조합이 키마다 끊기므로, 조합을 입력칸 대신 조합 창에 띄운다.
-fn transitory(context: &ITfContext) -> bool {
-    unsafe { context.GetStatus() }.map(|st| st.dwStaticFlags & TS_SS_TRANSITORY != 0).unwrap_or(false)
+/// 조합 창은 CUAS를 거치는 Win32 편집 컨트롤에서만 사용한다.
+/// TS_SS_TRANSITORY는 사용 주기가 짧은 문서라는 뜻이라, 이것만으로 옛 입력칸을 판별하면
+/// 그 플래그를 쓰는 다른 TSF 문맥까지 조합 창 모드로 잘못 분류할 수 있다.
+fn legacy_floating(context: &ITfContext) -> bool {
+    let transitory = unsafe { context.GetStatus() }
+        .map(|st| st.dwStaticFlags & TS_SS_TRANSITORY != 0)
+        .unwrap_or(false);
+    let is_edit_window = |mut hwnd: windows::Win32::Foundation::HWND| {
+        for _ in 0..8 {
+            if hwnd.0.is_null() {
+                break;
+            }
+            let mut buf = [0u16; 128];
+            let n = unsafe { GetClassNameW(hwnd, &mut buf) } as usize;
+            let class = String::from_utf16_lossy(&buf[..n]).to_ascii_lowercase();
+            if class == "edit" || class.starts_with("windowsforms10.edit") {
+                return true;
+            }
+            hwnd = unsafe { GetParent(hwnd) }.unwrap_or_default();
+        }
+        false
+    };
+    let is_standard_dialog = |mut hwnd: windows::Win32::Foundation::HWND| {
+        for _ in 0..8 {
+            if hwnd.0.is_null() {
+                break;
+            }
+            let mut buf = [0u16; 64];
+            let n = unsafe { GetClassNameW(hwnd, &mut buf) } as usize;
+            if String::from_utf16_lossy(&buf[..n]) == "#32770" {
+                return true;
+            }
+            hwnd = unsafe { GetParent(hwnd) }.unwrap_or_default();
+        }
+        false
+    };
+    let focus = unsafe { GetFocus() };
+    if is_edit_window(focus) {
+        return true;
+    }
+    let view_hwnd = unsafe { context.GetActiveView() }.and_then(|view| unsafe { view.GetWnd() }).unwrap_or_default();
+    if is_edit_window(view_hwnd) {
+        return true;
+    }
+    // CharMap routes its legacy Edit field through a standard dialog owner; its focused
+    // child HWND is not always visible to GetFocus from the TIP callback thread.
+    transitory && (is_standard_dialog(focus) || is_standard_dialog(view_hwnd))
 }
 
 /// 스레드 관리자의 compartment에 정수 값을 쓴다.
