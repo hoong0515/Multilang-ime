@@ -281,15 +281,22 @@ fn show_inner(list: &CandidateList, header: Option<&str>, anchor: RECT) {
     let (width, line_h, pad) = measure(hwnd, list, header);
     let rows = list.items.len() + header.is_some() as usize + (list.pages > 1) as usize;
     let height = line_h * rows as i32 + pad;
-    let mut x = anchor.left;
-    let mut y = anchor.bottom + 2;
-    // 화면 밖으로 나가지 않게 (아래 공간이 없으면 조합 위로)
+    // 조합 창(header): 맨 윗줄의 조합 글자가 커서 자리에 겹쳐 보이게 (입력칸에 직접 치는 것처럼),
+    // 후보는 그 아래로 이어진다. 글자 상자는 창 안 (pad, pad)에서 시작하고 높이는 line_h - pad.
+    let overlay = header.is_some();
+    let (mut x, mut y) = if overlay {
+        let caret_mid = (anchor.top + anchor.bottom) / 2;
+        (anchor.left - pad, caret_mid - pad - (line_h - pad) / 2)
+    } else {
+        (anchor.left, anchor.bottom + 2)
+    };
+    // 화면 밖으로 나가지 않게 (아래 공간이 없으면: 후보창은 조합 위로, 조합 창은 화면 안으로 올린다)
     let mon = unsafe { MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST) };
     let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
     if unsafe { GetMonitorInfoW(mon, &mut mi) }.as_bool() {
         let wa = mi.rcWork;
         if y + height > wa.bottom {
-            y = anchor.top - height - 2;
+            y = if overlay { wa.bottom - height } else { anchor.top - height - 2 };
         }
         x = x.min(wa.right - width).max(wa.left);
         y = y.max(wa.top);
