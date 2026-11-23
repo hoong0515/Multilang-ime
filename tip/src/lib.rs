@@ -100,6 +100,8 @@ fn current_key(wparam: WPARAM) -> Key {
 
 /// 왼쪽 Shift 탭: 눌렀다가 다른 키 없이 이 시간 안에 떼면 변환.
 const SHIFT_TAP: Duration = Duration::from_millis(250);
+/// 오른쪽 Alt 단독 탭으로 볼 최대 누름 시간 (길게 누르고 있다 떼면 Alt 조합을 하려던 것으로 본다)
+const RALT_TAP: Duration = Duration::from_millis(600);
 /// 백엔드 실패 뒤 다시 부르기까지 쉬는 시간.
 const OFFLINE_BACKOFF: Duration = Duration::from_millis(500);
 const VK_SHIFT_RAW: u16 = 0x10;
@@ -142,6 +144,43 @@ fn is_modifier_vk(vk: u16) -> bool {
     matches!(vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0xA0..=0xA5)
 }
 
+/// 오른쪽 Alt (확장 키 표시가 붙은 Alt). 한/영 키가 없는 키보드에서 언어 고정 키로 쓴다 (단독 탭만).
+fn is_right_alt(wparam: WPARAM, lparam: LPARAM) -> bool {
+    let vk = wparam.0 as u16;
+    (vk == 0x12 || vk == 0xA5) && (lparam.0 as u32 >> 24) & 1 == 1
+}
+
+/// AltGr 배열(독일어 등)에서는 오른쪽 Alt가 Ctrl+Alt로 들어와 글자를 친다: 그때는 언어 고정에 쓰지 않는다.
+fn altgr_layout_active() -> bool {
+    key_down(0xA2) // VK_LCONTROL: Windows가 AltGr에 덧붙이는 왼쪽 Ctrl
+}
+
+/// 일본어 배열의 半角/全角 키 → 한/영 키와 같은 언어 고정 순환.
+/// VK_OEM_AUTO/VK_OEM_ENLW(0xF3/0xF4)는 일본어 배열에만 있다. VK_KANJI(0x19)는 한국어 배열의 한자 키와 같은 값이라
+/// 지금 키보드 배열이 일본어일 때만 받는다.
+fn is_ja_lock_key(wparam: WPARAM) -> bool {
+    let vk = wparam.0 as u16;
+    if vk == 0xF3 || vk == 0xF4 {
+        return true;
+    }
+    if vk == 0x19 {
+        let hkl = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout(0) };
+        return (hkl.0 as usize & 0x3FF) == 0x11; // LANG_JAPANESE
+    }
+    false
+}
+
+/// 키 이벤트를 백엔드에 보낼 키로: 일본어 배열의 半角/全角은 한/영 키로 바꾼다.
+fn request_key(wparam: WPARAM) -> Key {
+    let mut key = current_key(wparam);
+    if is_ja_lock_key(wparam) {
+        key.vk = VK_HANGUL;
+        key.alt = false;
+        key.ctrl = false;
+    }
+    key
+}
+
 fn is_left_shift(wparam: WPARAM, lparam: LPARAM) -> bool {
     let vk = wparam.0 as u16;
     (vk == VK_SHIFT_RAW || vk == VK_LSHIFT_RAW) && ((lparam.0 as u32 >> 16) & 0xFF) != SCAN_RSHIFT
@@ -159,6 +198,8 @@ struct State {
     anchor: Option<RECT>,
     /// 왼쪽 Shift를 누른 시각 (그 뒤 다른 키가 오면 None).
     shift_down: Option<Instant>,
+    /// 오른쪽 Alt를 누른 시각 (단독 탭 판정, 다른 키가 끼면 None)
+    ralt_down: Option<Instant>,
     /// 조합 창 모드의 조합 문자열과 그 문맥 (옛 입력칸: 조합을 입력칸에 넣지 않는다)
     floating: Option<(String, usize)>,
 }
@@ -572,6 +613,24 @@ impl TextService_Impl {
         let _ = self.call(&Request::Reset);
     }
 
+    /// 키 누름에서 오른쪽 Alt 탭 상태를 갱신한다. 오른쪽 Alt면 Some(먹을지 = false), 아니면 None (다른 키가 끼면 탭 취소).
+    fn note_right_alt_down(&self, wparam: WPARAM, lparam: LPARAM, repeat: bool) -> Option<bool> {
+        let Ok(mut s) = self.state.try_borrow_mut() else { return None };
+        if is_right_alt(wparam, lparam) {
+            if !repeat {
+                s.ralt_down = if altgr_layout_active() { None } else { Some(Instant::now()) };
+            }
+            return Some(false); // 누름은 앱에 넘긴다 (Alt 조합이 그대로 동작하게)
+        }
+        s.ralt_down = None;
+        None
+    }
+
+    /// 오른쪽 Alt를 혼자 짧게 눌렀다 떼는 중인가.
+    fn right_alt_tap_pending(&self) -> bool {
+        self.state.try_borrow().ok().and_then(|s| s.ralt_down).is_some_and(|t| t.elapsed() <= RALT_TAP)
+    }
+
     /// 왼쪽 Shift 탭인가 (KeyUp에서 확인). 조합 중일 때만 의미가 있다.
     fn shift_tap_pending(&self) -> bool {
         self.state
@@ -659,6 +718,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         debug_log("TestKeyDown", wparam, lparam);
         // Shift 탭 판정용 시각 기록 (옛 입력칸(CUAS)에서는 Shift에 대해 OnKeyDown 없이 이것만 불린다)
         let repeat = (lparam.0 as u32 >> 30) & 1 == 1;
+        if let Some(r) = self.note_right_alt_down(wparam, lparam, repeat) {
+            return Ok(r.into());
+        }
         if let Ok(mut s) = self.state.try_borrow_mut() {
             if is_left_shift(wparam, lparam) {
                 if !repeat {
@@ -676,7 +738,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 return Ok(false.into());
             }
         }
-        let Some(t) = self.call(&Request::Test { key: current_key(wparam) }) else {
+        let Some(t) = self.call(&Request::Test { key: request_key(wparam) }) else {
             return Ok(false.into());
         };
         // flush_first면 OnKeyDown에서 확정한 뒤 키를 앱에 넘긴다
@@ -688,6 +750,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         debug_log("KeyDown", wparam, lparam);
         // 왼쪽 Shift: 누른 시각만 기록하고 키는 앱에 넘긴다 (탭 판정은 KeyUp에서)
         let repeat = (lparam.0 as u32 >> 30) & 1 == 1;
+        if let Some(r) = self.note_right_alt_down(wparam, lparam, repeat) {
+            return Ok(r.into());
+        }
         if let Ok(mut s) = self.state.try_borrow_mut() {
             if is_left_shift(wparam, lparam) {
                 if !repeat {
@@ -711,7 +776,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         if !self.composing() && self.input_off(ctx) {
             return Ok(false.into());
         }
-        let key = current_key(wparam);
+        let key = request_key(wparam);
         if is_modifier_vk(key.vk) {
             return Ok(false.into());
         }
@@ -753,6 +818,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
 
     fn OnTestKeyUp(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         debug_log("TestKeyUp", wparam, lparam);
+        if is_right_alt(wparam, lparam) {
+            return Ok(self.right_alt_tap_pending().into());
+        }
         if !is_left_shift(wparam, lparam) {
             return Ok(false.into());
         }
@@ -767,6 +835,28 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
 
     fn OnKeyUp(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         debug_log("KeyUp", wparam, lparam);
+        if is_right_alt(wparam, lparam) {
+            // 오른쪽 Alt 단독 탭: 한/영 키처럼 언어 고정 순환. 뗌을 먹어서 앱 메뉴 막대가 켜지지 않게 한다.
+            let tap = self.right_alt_tap_pending();
+            if let Ok(mut s) = self.state.try_borrow_mut() {
+                s.ralt_down = None;
+            }
+            if !tap {
+                return Ok(false.into());
+            }
+            let Ok(ctx) = pic.ok() else { return Ok(false.into()) };
+            if !self.composing() && self.input_off(ctx) {
+                return Ok(false.into());
+            }
+            let key = Key { vk: VK_HANGUL, shift: false, caps: false, ctrl: false, alt: false };
+            let Some(r) = self.call(&Request::Key { key }) else { return Ok(false.into()) };
+            if !r.eaten {
+                return Ok(false.into());
+            }
+            self.apply(ctx, &r)?;
+            self.toast_lock(ctx, &r);
+            return Ok(true.into());
+        }
         if !is_left_shift(wparam, lparam) {
             return Ok(false.into());
         }
@@ -1640,5 +1730,28 @@ mod juce_tests {
         let corner = RECT { left: 2559, top: 1391, right: 2560, bottom: 1391 };
         assert_eq!(choose(Some(corner), WINDOW, Some(click), Some(commit)).map(|r| r.left), Some(397));
         assert_eq!(choose(Some(corner), WINDOW, None, None), Some(corner));
+    }
+}
+
+#[cfg(test)]
+mod lock_key_tests {
+    use super::*;
+
+    #[test]
+    fn right_alt_needs_extended_flag() {
+        let ext = LPARAM((1 << 24) | (0x38 << 16) | 1);
+        let left = LPARAM((0x38 << 16) | 1);
+        assert!(is_right_alt(WPARAM(0x12), ext));
+        assert!(is_right_alt(WPARAM(0xA5), ext));
+        assert!(!is_right_alt(WPARAM(0x12), left)); // 왼쪽 Alt
+        assert!(!is_right_alt(WPARAM(0x15), ext)); // 한/영 키는 따로
+    }
+
+    #[test]
+    fn japanese_hankaku_zenkaku_maps_to_lock_key() {
+        assert!(is_ja_lock_key(WPARAM(0xF3)));
+        assert!(is_ja_lock_key(WPARAM(0xF4)));
+        assert_eq!(request_key(WPARAM(0xF3)).vk, VK_HANGUL);
+        assert!(!is_ja_lock_key(WPARAM(0x41)));
     }
 }
