@@ -1,18 +1,25 @@
-//! 백엔드 파이프의 생성·읽기·접속 제한 (보안 검토 R1·R5).
+//! 백엔드 파이프의 생성·읽기·접속 제한 (보안 검토 R1·R3·R5).
 //!
 //! - 요청 하나는 `MAX_REQUEST` 바이트까지. 넘으면 연결을 끊는다 (메모리 누적 방지).
 //! - 동시 연결은 `MAX_CONNECTIONS`개까지. 넘는 연결은 받자마자 끊는다 (스레드 소진 방지).
 //! - 원격(다른 컴퓨터) 클라이언트는 받지 않는다 (`PIPE_REJECT_REMOTE_CLIENTS`).
+//! - 연결한 프로세스가 샌드박스(AppContainer)이거나 보통(Medium)보다 낮은 무결성이면
+//!   관리 명령(학습 지우기)을 거부한다. 키 처리는 그대로 받는다 (검색창 같은 샌드박스 앱 안의 TIP).
 
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{GetLastError, ERROR_MORE_DATA, HANDLE, INVALID_HANDLE_VALUE};
-use windows::Win32::Security::SECURITY_ATTRIBUTES;
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_MORE_DATA, HANDLE, INVALID_HANDLE_VALUE};
+use windows::Win32::Security::{
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel, TokenIsAppContainer,
+    SECURITY_ATTRIBUTES, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+};
 use windows::Win32::Storage::FileSystem::{ReadFile, FILE_FLAGS_AND_ATTRIBUTES, PIPE_ACCESS_DUPLEX};
 use windows::Win32::System::Pipes::{
-    CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
+use windows::Win32::System::Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
 
 /// 요청 하나의 최대 크기. 실제 요청은 수백 바이트 (키 하나, 프로그램 이름 하나).
 pub const MAX_REQUEST: usize = 16 * 1024;
@@ -107,11 +114,61 @@ pub fn valid_app_name(app: &str) -> bool {
     !app.is_empty() && app.chars().count() <= MAX_APP_NAME && !app.chars().any(|c| c.is_control() || c == '\\' || c == '/')
 }
 
+/// 보통 무결성 (SECURITY_MANDATORY_MEDIUM_RID).
+const MEDIUM_RID: u32 = 0x2000;
+
+/// 관리 명령을 허락할 클라이언트인가: 샌드박스가 아니고 무결성이 Medium 이상.
+pub fn may_manage(app_container: bool, integrity_rid: u32) -> bool {
+    !app_container && integrity_rid >= MEDIUM_RID
+}
+
+/// 파이프 건너편 프로세스의 (샌드박스 여부, 무결성 RID). 알 수 없으면 None.
+pub fn client_identity(h: HANDLE) -> Option<(bool, u32)> {
+    let mut pid = 0u32;
+    unsafe { GetNamedPipeClientProcessId(h, &mut pid) }.ok()?;
+    process_identity(pid)
+}
+
+pub fn process_identity(pid: u32) -> Option<(bool, u32)> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut token = HANDLE::default();
+        let opened = OpenProcessToken(process, TOKEN_QUERY, &mut token);
+        let _ = CloseHandle(process);
+        opened.ok()?;
+        let out = token_identity(token);
+        let _ = CloseHandle(token);
+        out
+    }
+}
+
+unsafe fn token_identity(token: HANDLE) -> Option<(bool, u32)> {
+    unsafe {
+        let mut is_ac = 0u32;
+        let mut len = 0u32;
+        GetTokenInformation(token, TokenIsAppContainer, Some(&mut is_ac as *mut u32 as *mut c_void), 4, &mut len).ok()?;
+        let _ = GetTokenInformation(token, TokenIntegrityLevel, None, 0, &mut len);
+        if len == 0 {
+            return None;
+        }
+        // TOKEN_MANDATORY_LABEL 정렬을 위해 u64 버퍼
+        let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+        GetTokenInformation(token, TokenIntegrityLevel, Some(buf.as_mut_ptr() as *mut c_void), len, &mut len).ok()?;
+        let label = &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL);
+        let sid = label.Label.Sid;
+        let count = *GetSidSubAuthorityCount(sid);
+        if count == 0 {
+            return None;
+        }
+        let rid = *GetSidSubAuthority(sid, (count - 1) as u32);
+        Some((is_ac != 0, rid))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write as _;
-    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Pipes::{ConnectNamedPipe, DisconnectNamedPipe};
 
     fn wide(s: &str) -> Vec<u16> {
@@ -203,4 +260,69 @@ mod tests {
         assert!(!valid_app_name("c:\\windows\\notepad.exe"));
     }
 
+    #[test]
+    fn manage_policy() {
+        assert!(may_manage(false, 0x2000)); // Medium
+        assert!(may_manage(false, 0x3000)); // High (관리자)
+        assert!(!may_manage(false, 0x1000)); // Low
+        assert!(!may_manage(true, 0x1000)); // AppContainer
+        assert!(!may_manage(true, 0x2000));
+    }
+
+    #[test]
+    fn this_process_is_trusted() {
+        let (ac, rid) = process_identity(std::process::id()).expect("identity");
+        assert!(!ac);
+        assert!(may_manage(ac, rid), "rid {rid:#x}");
+    }
+
+    /// 낮은 무결성(Low)으로 띄운 자식 프로세스가 파이프에 붙으면 관리 명령을 허락하지 않는다.
+    #[test]
+    fn low_integrity_client_may_not_manage() {
+        use windows::core::PWSTR;
+        use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+        use windows::Win32::Security::{
+            DuplicateTokenEx, SecurityImpersonation, SetTokenInformation, TokenPrimary, PSID, SID_AND_ATTRIBUTES,
+            TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
+        };
+        use windows::Win32::System::Pipes::{ConnectNamedPipe, DisconnectNamedPipe};
+        use windows::Win32::System::Threading::{
+            CreateProcessAsUserW, GetCurrentProcess, TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW,
+            PROCESS_INFORMATION, STARTUPINFOW,
+        };
+
+        const SE_GROUP_INTEGRITY: u32 = 0x20;
+        let name = unique_name("lowil");
+        let server = create(&wide(&name), None).expect("create pipe");
+        unsafe {
+            let mut token = HANDLE::default();
+            OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY, &mut token)
+                .expect("open token");
+            let mut low = HANDLE::default();
+            DuplicateTokenEx(token, windows::Win32::Security::TOKEN_ACCESS_MASK(0), None, SecurityImpersonation, TokenPrimary, &mut low)
+                .expect("duplicate");
+            let mut sid = PSID::default();
+            ConvertStringSidToSidW(windows::core::w!("S-1-16-4096"), &mut sid).expect("low sid");
+            let label = TOKEN_MANDATORY_LABEL { Label: SID_AND_ATTRIBUTES { Sid: sid, Attributes: SE_GROUP_INTEGRITY } };
+            SetTokenInformation(low, TokenIntegrityLevel, &label as *const _ as *const c_void, std::mem::size_of::<TOKEN_MANDATORY_LABEL>() as u32)
+                .expect("set low integrity");
+            // 파이프를 읽기로 열고 잠시 기다리는 자식 (cmd 리디렉션)
+            let mut cmd = wide(&format!(r#"cmd.exe /d /c "ping -n 4 127.0.0.1 > nul < {name}""#));
+            let si = STARTUPINFOW { cb: std::mem::size_of::<STARTUPINFOW>() as u32, ..Default::default() };
+            let mut pi = PROCESS_INFORMATION::default();
+            CreateProcessAsUserW(Some(low), None, Some(PWSTR(cmd.as_mut_ptr())), None, None, false, CREATE_NO_WINDOW, None, None, &si, &mut pi)
+                .expect("spawn low-integrity child");
+            let _ = ConnectNamedPipe(server, None);
+            let id = client_identity(server);
+            let _ = TerminateProcess(pi.hProcess, 0);
+            let _ = WaitForSingleObject(pi.hProcess, 5000);
+            let _ = DisconnectNamedPipe(server);
+            for h in [server, pi.hProcess, pi.hThread, low, token] {
+                let _ = CloseHandle(h);
+            }
+            let (ac, rid) = id.expect("client identity");
+            assert_eq!((ac, rid), (false, 0x1000));
+            assert!(!may_manage(ac, rid));
+        }
+    }
 }

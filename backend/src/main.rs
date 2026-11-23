@@ -95,6 +95,9 @@ const VK_HANGUL: u16 = 0x15;
 fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory) {
     let h = HANDLE(h.0 as *mut c_void);
     let mut session = Session::new(models, history, Some(data_dir().join("history.json")), mozc_server_path());
+    // 관리 명령(학습 지우기)은 샌드박스가 아닌 보통 무결성 이상 프로세스만 (확인 못 하면 거부)
+    let identity = pipe::client_identity(h);
+    let may_manage = identity.is_some_and(|(ac, rid)| pipe::may_manage(ac, rid));
     loop {
         let msg = match pipe::read_message(h, pipe::MAX_REQUEST) {
             pipe::Read::Message(m) => m,
@@ -127,7 +130,11 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory)
                 }
                 Response::default()
             }
-            Ok(Request::ClearLearning) => session.clear_learning(),
+            Ok(Request::ClearLearning) if may_manage => session.clear_learning(),
+            Ok(Request::ClearLearning) => {
+                log(&format!("clear_learning denied (client {identity:?}, app {:?})", session.app));
+                Response { error: Some("denied".into()), ..Default::default() }
+            }
             Ok(Request::Status) => Response::default(),
             Ok(Request::Flush) => session.flush(),
             Ok(Request::Reset) => session.reset(),

@@ -280,9 +280,16 @@ class SettingsForm : Form
     {
         var ok = MessageBox.Show(this, "학습 기록을 모두 지울까요? 되돌릴 수 없습니다.", Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
         if (ok != DialogResult.OK) return;
-        string err = null;
-        if (Backend.Call("{\"op\":\"clear_learning\"}", out err))
+        string err = null, reply;
+        if (Backend.Call("{\"op\":\"clear_learning\"}", out reply, out err))
         {
+            // 백엔드가 거부함 (샌드박스·낮은 무결성으로 실행된 경우 등): 파일도 지우지 않는다
+            if (reply.Contains("\"error\""))
+            {
+                MessageBox.Show(this, "백엔드가 학습 지우기를 거부했습니다.\n설정 화면을 관리자 권한이 아닌 보통 권한으로 실행해 주세요.",
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
             MessageBox.Show(this, "학습 기록을 지웠습니다.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
@@ -315,8 +322,9 @@ static class Backend
         return sb.ToString();
     }
 
-    public static bool Call(string json, out string error)
+    public static bool Call(string json, out string reply, out string error)
     {
+        reply = null;
         error = null;
         try
         {
@@ -327,7 +335,14 @@ static class Backend
                 var req = Encoding.UTF8.GetBytes(json);
                 p.Write(req, 0, req.Length);
                 var buf = new byte[4096];
-                do { p.Read(buf, 0, buf.Length); } while (!p.IsMessageComplete);
+                var ms = new MemoryStream();
+                do
+                {
+                    int n = p.Read(buf, 0, buf.Length);
+                    if (n <= 0) break;
+                    ms.Write(buf, 0, n);
+                } while (!p.IsMessageComplete);
+                reply = Encoding.UTF8.GetString(ms.ToArray());
                 return true;
             }
         }

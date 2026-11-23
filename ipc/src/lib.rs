@@ -70,7 +70,8 @@ pub enum Request {
     ShiftTap,
     /// 연결 직후 TIP가 알리는 프로그램 실행 파일 이름 (앱별 자동 꺼짐).
     Hello { app: String },
-    /// 설정 화면: 학습 기록(판정·한자·Mozc)을 모두 지운다.
+    /// 설정 화면: 학습 기록(판정·한자·Mozc)을 모두 지운다. 관리 명령: 샌드박스(AppContainer)나
+    /// 낮은 무결성 프로세스가 보내면 거부한다 (`error`가 채워진 응답).
     ClearLearning,
     /// 상태만 묻는다 (입력 표시기 갱신용, 포커스를 다시 얻었을 때).
     Status,
@@ -127,10 +128,30 @@ pub struct Response {
     /// 입력 표시기 (백엔드가 응답마다 채운다).
     #[serde(default)]
     pub indicator: Option<Indicator>,
+    /// 요청을 거부했을 때의 이유 (예: 샌드박스 앱이 보낸 관리 명령). 보통은 없다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl Response {
     pub fn preedit_text(&self) -> String {
         self.preedit.iter().map(|s| s.text.as_str()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_field_is_optional() {
+        // 보통 응답에는 error가 없고, 옛 응답(필드 없음)도 읽힌다
+        let json = serde_json::to_string(&Response::default()).unwrap();
+        assert!(!json.contains("error"));
+        let r: Response = serde_json::from_str(r#"{"eaten":false,"flush_first":false,"preedit":[],"commit":null}"#).unwrap();
+        assert_eq!(r.error, None);
+        let denied = Response { error: Some("denied".into()), ..Default::default() };
+        let back: Response = serde_json::from_str(&serde_json::to_string(&denied).unwrap()).unwrap();
+        assert_eq!(back.error.as_deref(), Some("denied"));
     }
 }
