@@ -533,8 +533,7 @@ impl TextService_Impl {
             _ => {}
         }
         let scopes = out.take().unwrap_or_default();
-        // 첫 번째(주된) 용도로 판단한다 (예: 검색칸은 IS_SEARCH, 이메일칸은 IS_EMAIL_SMTPEMAILADDRESS)
-        let off = scopes.first().is_some_and(|s| OFF_SCOPES.contains(s));
+        let off = scopes_off(&scopes);
         if off || !scopes.is_empty() {
             debug_note(&format!("input scopes {scopes:?} -> off={off}"));
         }
@@ -787,6 +786,16 @@ impl ITfCompositionSink_Impl for TextService_Impl {
 // ---------------------------------------------------------------- 편집 세션
 // ---------------------------------------------------------------- 자동 꺼짐
 /// IME를 쓰지 않는 입력칸 용도 (비밀번호·PIN, 숫자·전화·금액, 이메일·로그인 이름, URL, 반각 영숫자).
+/// 비밀번호·PIN 용도: 여러 용도 중 어디에 있든 끈다 (보안 검토 R2).
+const PROTECTED_SCOPES: &[i32] = &[IS_PASSWORD.0, IS_NUMERIC_PASSWORD.0, IS_NUMERIC_PIN.0, IS_ALPHANUMERIC_PIN.0];
+
+/// 입력 용도 목록으로 IME를 끌지 정한다. 비밀번호·PIN은 하나라도 있으면 끈다.
+/// 나머지(주소·숫자 등)는 첫 번째(주된) 용도로만 판단한다 (예: 검색칸은 IS_SEARCH가 먼저, 이메일칸은
+/// IS_EMAIL_SMTPEMAILADDRESS가 먼저. 뒤에 붙은 보조 용도로 끄면 검색창에서 IME가 꺼진다).
+fn scopes_off(scopes: &[i32]) -> bool {
+    scopes.iter().any(|s| PROTECTED_SCOPES.contains(s)) || scopes.first().is_some_and(|s| OFF_SCOPES.contains(s))
+}
+
 const OFF_SCOPES: &[i32] = &[
     IS_URL.0,
     IS_EMAIL_USERNAME.0,
@@ -1360,4 +1369,33 @@ extern "system" fn DllUnregisterServer() -> HRESULT {
     unregister_tsf();
     unregister_com_class();
     S_OK
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn protected_scope_anywhere_turns_off() {
+        assert!(scopes_off(&[IS_PASSWORD.0]));
+        assert!(scopes_off(&[IS_DEFAULT.0, IS_PASSWORD.0]));
+        assert!(scopes_off(&[IS_SEARCH.0, IS_NUMERIC_PIN.0]));
+        assert!(scopes_off(&[IS_TEXT.0, IS_ALPHANUMERIC_PIN.0, IS_NUMERIC_PASSWORD.0]));
+    }
+
+    #[test]
+    fn other_off_scopes_only_when_first() {
+        assert!(scopes_off(&[IS_URL.0]));
+        assert!(scopes_off(&[IS_EMAIL_SMTPEMAILADDRESS.0, IS_TEXT.0]));
+        assert!(!scopes_off(&[IS_SEARCH.0, IS_URL.0]));
+        assert!(!scopes_off(&[IS_DEFAULT.0, IS_NUMBER.0]));
+    }
+
+    #[test]
+    fn ordinary_fields_stay_on() {
+        assert!(!scopes_off(&[]));
+        assert!(!scopes_off(&[IS_DEFAULT.0]));
+        assert!(!scopes_off(&[IS_SEARCH.0]));
+        assert!(!scopes_off(&[IS_TEXT.0, IS_CHAT.0]));
+    }
 }
