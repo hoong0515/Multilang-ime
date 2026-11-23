@@ -5,3 +5,6 @@ ftfy==6.3.1
 langcodes==3.5.1
 msgpack==1.2.4
 regex==2026.9.29
+# Japanese readings (ime_v0/models.py): MeCab wrapper and its dictionary
+fugashi==1.5.2
+unidic-lite==1.0.8
