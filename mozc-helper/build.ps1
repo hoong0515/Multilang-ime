@@ -1,7 +1,7 @@
 # Build the Mozc stdio helper inside a Mozc checkout (see docs/mozc-helper.md).
 #   powershell -ExecutionPolicy Bypass -File mozc-helper\build.ps1 [-Mozc K:\mozc-build\mozc]
 # Output: target\mozc-helper\mozc_stdio.exe
-param([string]$Mozc = "K:\mozc-build\mozc")
+param([string]$Mozc = "K:\mozc-build\mozc", [string[]]$BazelArgs = @())
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent
 $src = Join-Path $Mozc "src"
@@ -43,7 +43,7 @@ $bazelisk = (Get-Command bazelisk -ErrorAction SilentlyContinue).Source
 if (-not $bazelisk) { $bazelisk = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links\bazelisk.exe" }
 Push-Location $src
 try {
-    & $bazelisk build //multilang:mozc_stdio --config oss_windows --config release_build
+    & $bazelisk build //multilang:mozc_stdio --config oss_windows --config release_build @BazelArgs
     if ($LASTEXITCODE) { throw "bazel build failed" }
 } finally { Pop-Location }
 

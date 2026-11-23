@@ -1,7 +1,7 @@
 # Claude Code 전달 메모: TSF 프로필 숨김과 A0 입력칸 회귀
 
 작성일: 2026-11-23
-프로젝트: `C:\Users\jaehw\Documents\multilang-ime`
+프로젝트: 이 저장소 (multilang-ime)
 
 ## 사용자 요청 및 현재 프로필 상태
 Windows 입력기 선택 목록에서 다음 네 프로필을 숨기도록 요청받음:

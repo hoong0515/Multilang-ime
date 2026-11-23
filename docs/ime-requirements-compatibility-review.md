@@ -1,7 +1,7 @@
 # 서드파티 IME 요구사항·호환성 검토
 
 검토일: 2026-11-23  
-대상: `C:\Users\jaehw\Documents\multilang-ime`의 TSF 프런트엔드, 백엔드 통신, 등록 및 배포 폴더  
+대상: 이 저장소(multilang-ime)의 TSF 프런트엔드, 백엔드 통신, 등록 및 배포 폴더  
 범위: Microsoft의 IME 기본 요구사항과 Windows 앱 호환성에 대한 정적 검토. 파일 수정이나 호환성 실행 시험은 하지 않았다.
 
 ## 요약

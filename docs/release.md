@@ -9,7 +9,20 @@ powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.
 - x64(`tip`, `backend`)와 x86(`tip`)을 빌드해 `dist\MultilangIME-<버전>\`에 모으고 zip과 SHA-256을 만든다.
 - 넣는 것: TIP DLL(x64 루트, 32비트는 `x86\`), `backend.exe`, `engine_model.json`, `hanja.txt`, `mozc\`(공식 MSI에서 꺼낸 mozc_server와 VC 런타임, 학습 DB는 빼고), `LICENSE.txt`(GPL-3.0), `THIRD-PARTY-NOTICES.md`, `licenses\`, 사용자용 `README.md`(`installer\README-install.md`), 설치·제거 스크립트.
 - 설정 화면 `MultilangIME-Settings.exe`도 함께 빌드해 넣는다 (`settingsuild.ps1`).
-- 재료: `data\engine_model.json`(`python -m ime_v0.export_model`), `deploy\x64\mozc\`.
+- 재료: `data\engine_model.json`(`python -m ime_v0.export_model`), `third_party\libhangul\hanja.txt`(`tools\fetch-third-party.ps1`), `target\mozc-helper\mozc_stdio.exe`와 Mozc의 `credits_en.html`(`mozc-helper\build.ps1`), VS redist의 VC 런타임.
+
+## CI (GitHub Actions, `.github/workflows/build.yml`)
+
+| 작업 | 언제 | 내용 |
+| --- | --- | --- |
+| core | 모든 push·PR | 모델 데이터 생성(`requirements-model.txt`, Python 3.10, `data/model_params.json`), `tools\fetch-third-party.ps1`(libhangul hanja.txt, 커밋 고정 + SHA-256), `cargo test`(engine·ipc·backend), x64·x86 빌드, 설정 화면 |
+| mozc | `v*` 태그, 수동 실행 | Mozc 소스(커밋 고정 `MOZC_COMMIT`) + `update_deps.py` + `mozc-helper\build.ps1`, Bazel 디스크 캐시 |
+| package | mozc 뒤 | `installer\build-release.ps1 -NoBuild` → `release` 아티팩트(zip + sha256). VC 런타임은 VS redist에서 |
+
+- 액션은 커밋 SHA로 고정 (Mozc 저장소와 같은 방식).
+- git에 없는 입력은 모두 CI에서 다시 만든다: 모델(개발용과 같은 바이트 확인), hanja.txt(체크섬), Mozc 도우미(고정 커밋 소스 빌드).
+- 코드 서명(SignPath 등)은 이 `release` 아티팩트(또는 그 안의 exe/dll)를 서명 단계에 넘기는 식으로 붙인다.
+- 아직 GitHub에서 실제로 돌려 보지 않았다 (원격 저장소 없음). 로컬에서는 `build-release.ps1`와 YAML 구문만 확인.
 
 ## 설치 스크립트 (`installer\install.ps1`)
 

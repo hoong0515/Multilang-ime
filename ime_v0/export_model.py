@@ -2,6 +2,8 @@
 
 n-gram 집계, 빈도 사전, 판정 파라미터를 그대로 옮긴다. Python v0과 Rust 엔진이 같은 수치를 쓰게 하려는 것.
 사용: python -m ime_v0.export_model [파라미터 JSON] [출력 경로]
+기본 파라미터는 data/model_params.json (git에 있는 판정 파라미터, 공개 데이터 튜닝 v4).
+CI는 requirements-model.txt(고정 버전, Python 3.10)로 만들며 개발용 파일과 바이트까지 같다.
 """
 import json
 import sys
@@ -25,7 +27,7 @@ def ngram_dict(lm):
 
 
 def main(params_path=None, out_path=None):
-    params_path = Path(params_path or ROOT / "data/public/best_params_public_v4.json")
+    params_path = Path(params_path or ROOT / "data/model_params.json")
     out_path = Path(out_path or ROOT / "data/engine_model.json")
     m = load()
     data = {

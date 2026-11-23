@@ -1,0 +1,169 @@
+# Build Multilang IME on GitHub Actions.
+# - core (every push / PR): model data, Rust x64 + x86, tests, settings app.
+# - mozc + package (tags v* and manual runs): Mozc stdio helper from the pinned Mozc source,
+#   then the release zip. The zip is the input for code signing (docs/release.md).
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MOZC_REPO: google/mozc
+  MOZC_COMMIT: 1527a4cd1217cec4611cd4bc8d46f8c66ea79e6a
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.10"
+
+      - name: Model data (engine_model.json)
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements-model.txt
+          python -m ime_v0.export_model data/model_params.json data/engine_model.json
+
+      - name: Third-party data (pinned, checksum verified)
+        shell: pwsh
+        run: ./tools/fetch-third-party.ps1
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add x86_64-pc-windows-msvc i686-pc-windows-msvc
+
+      - name: Test
+        shell: pwsh
+        run: cargo test --release -p engine -p ipc -p backend
+
+      - name: Build x64 and x86
+        shell: pwsh
+        run: |
+          cargo build --release -p tip -p backend
+          cargo build --release -p tip --target i686-pc-windows-msvc
+
+      - name: Settings app
+        shell: pwsh
+        run: ./settings/build.ps1
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: core
+          if-no-files-found: error
+          path: |
+            target/release/multilang_tip.dll
+            target/release/backend.exe
+            target/i686-pc-windows-msvc/release/multilang_tip.dll
+            target/settings/MultilangIME-Settings.exe
+            data/engine_model.json
+            third_party/libhangul/hanja.txt
+
+  mozc:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-2025
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: ime
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ env.MOZC_REPO }}
+          ref: ${{ env.MOZC_COMMIT }}
+          path: mozc
+          submodules: false
+          persist-credentials: false
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: mozc/src/third_party_cache
+          key: mozc-deps-${{ env.MOZC_COMMIT }}
+
+      - name: Mozc build dependencies (LLVM, MSYS2, ninja)
+        shell: cmd
+        working-directory: mozc\src
+        run: python build_tools/update_deps.py
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: D:\bazel-disk-cache
+          key: mozc-bazel-${{ env.MOZC_COMMIT }}-${{ hashFiles('ime/mozc-helper/**') }}
+          restore-keys: mozc-bazel-${{ env.MOZC_COMMIT }}-
+
+      - name: Build mozc_stdio.exe
+        shell: pwsh
+        working-directory: ime
+        run: ./mozc-helper/build.ps1 -Mozc "${{ github.workspace }}\mozc" -BazelArgs "--disk_cache=D:\bazel-disk-cache"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: mozc-helper
+          if-no-files-found: error
+          path: |
+            ime/target/mozc-helper/mozc_stdio.exe
+            mozc/src/data/installer/credits_en.html
+
+  package:
+    needs: [core, mozc]
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: core
+          path: .
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: mozc-helper
+          path: mozc-artifact
+
+      - name: Release zip
+        shell: pwsh
+        run: |
+          $version = if ("${{ github.ref }}".StartsWith("refs/tags/v")) { "${{ github.ref_name }}".Substring(1) } else { "0.0.0-dev.${{ github.run_number }}" }
+          $helper = Get-ChildItem mozc-artifact -Recurse -Filter mozc_stdio.exe | Select-Object -First 1
+          $credits = Get-ChildItem mozc-artifact -Recurse -Filter credits_en.html | Select-Object -First 1
+          ./installer/build-release.ps1 -Version $version -NoBuild -MozcHelper $helper.FullName -MozcCredits $credits.FullName
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/*.sha256

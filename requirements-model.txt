@@ -1,0 +1,7 @@
+# Python packages for generating data/engine_model.json (python -m ime_v0.export_model data/model_params.json).
+# Pinned: the output is checked byte-for-byte against the model used in development (Python 3.10).
+wordfreq==3.1.1
+ftfy==6.3.1
+langcodes==3.5.1
+msgpack==1.2.4
+regex==2026.9.29
