@@ -306,7 +306,8 @@ python poc/mozc/run_poc.py
 - 수정:
   - 폴더: `icacls deployd /grant "*S-1-15-2-1:(OI)(CI)(RX)" /grant "*S-1-15-2-2:(OI)(CI)(RX)" /T` (ALL APPLICATION PACKAGES, ALL RESTRICTED APPLICATION PACKAGES). 설치 프로그램에도 넣어야 한다.
   - 파이프 (`backend/src/pipe_security.rs`): DACL = SYSTEM·이 사용자 전체, AC·LPAC 읽기/쓰기, SACL = 무결성 Low. 샌드박스 앱은 사용자 확인과 샌드박스 확인을 둘 다 통과해야 해 다른 사용자의 앱은 접속할 수 없다. 실제 적용 확인: `D:(A;;FA;;;SY)(A;;FA;;;<user>)(A;;0x12019f;;;AC)(A;;0x12019f;;;S-1-15-2-2)S:AI(ML;;NW;;;LW)`.
-- 일반 앱 접속은 그대로 정상. 검색창에서의 실제 입력은 사용자 확인 필요 (Claude의 화면 조작 권한으로는 셸 검색창에 입력할 수 없음).
+- 일반 앱 접속은 그대로 정상. 검색창 입력은 사용자가 확인함 (Claude의 화면 조작 권한으로는 셸 검색창에 입력할 수 없음).
+- 후보창이 검색창 뒤에 가려지던 문제: 검색창은 몰입형(immersive) 화면이라 일반 창보다 위 층에 그려진다. 후보창(조합 창 포함)을 띄울 때 소유자를 포커스 창의 최상위 창으로 맞춰(`candwin::follow_owner`, GWLP_HWNDPARENT) 같은 층 위에 뜨게 했다. 메모장 후보창은 그대로 정상.
 
 ## 알려진 한계
 

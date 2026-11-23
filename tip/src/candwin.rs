@@ -206,8 +206,35 @@ pub fn show_floating(preedit: &str, list: Option<&CandidateList>, anchor: RECT) 
     show_inner(list.unwrap_or(&empty), Some(preedit), anchor);
 }
 
+/// 후보창의 소유자를 지금 입력 중인 창(포커스 창의 최상위 창)으로 맞춘다.
+/// 작업 표시줄 검색창 같은 몰입형(immersive) 화면은 일반 창보다 위 층에 그려지므로, 소유자가 없으면
+/// 맨 위(topmost)로 띄워도 그 뒤에 가려진다. 소유된 창은 소유자보다 위, 같은 층에 그려진다.
+fn follow_owner(hwnd: HWND) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+    let focus = unsafe { GetFocus() };
+    if focus.0.is_null() {
+        return;
+    }
+    let root = unsafe { GetAncestor(focus, GA_ROOT) };
+    if root.0.is_null() || root == hwnd {
+        return;
+    }
+    let current = unsafe { GetWindow(hwnd, GW_OWNER) }.unwrap_or_default();
+    if current != root {
+        #[cfg(target_pointer_width = "64")]
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, root.0 as isize);
+        }
+        #[cfg(target_pointer_width = "32")]
+        unsafe {
+            SetWindowLongW(hwnd, GWL_HWNDPARENT, root.0 as i32);
+        }
+    }
+}
+
 fn show_inner(list: &CandidateList, header: Option<&str>, anchor: RECT) {
     let Some(hwnd) = ensure_window() else { return };
+    follow_owner(hwnd);
     WIN.with(|w| {
         if let Ok(mut w) = w.try_borrow_mut() {
             w.list = list.clone();
