@@ -112,11 +112,7 @@ const SCAN_RSHIFT: u32 = 0x36;
 /// (자동화 도구 등이 스캔 코드 없이 보낸 Shift도 받기 위해).
 /// 임시 진단 로그 (%TEMP%\multilang-tip.log). MULTILANG_TIP_DEBUG 파일이 DLL 옆에 있을 때만.
 fn debug_log(what: &str, wparam: WPARAM, lparam: LPARAM) {
-    let dll = String::from_utf16_lossy(&module_path());
-    let Some(dir) = std::path::Path::new(&dll).parent() else { return };
-    if !dir.join("MULTILANG_TIP_DEBUG").exists() {
-        return;
-    }
+    let Some(dir) = debug_dir() else { return };
     use std::io::Write as _;
     // logs 폴더가 있으면 거기에 (샌드박스 앱도 쓸 수 있게 권한을 준 폴더), 프로세스 이름도 함께
     let logs = dir.join("logs");
@@ -431,6 +427,18 @@ impl TextService_Impl {
                     debug_note(&format!("juce anchor {:?} -> {:?}", anchor.map(|a| (a.left, a.top)), chosen.map(|a| (a.left, a.top))));
                 }
                 anchor = chosen;
+            } else {
+                // 커서 위치를 알려 주지 않는 앱(게임 등): Windows가 화면 구석을 돌려준다. 창 밖이면 고른 자리로.
+                juce::ensure_hook();
+                let focus = unsafe { GetFocus() };
+                let mut window = RECT::default();
+                if unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(focus, &mut window) }.is_ok() {
+                    let chosen = juce::fallback(anchor, window);
+                    if chosen != anchor {
+                        debug_note(&format!("fallback anchor {:?} -> {:?}", anchor.map(|a| (a.left, a.top)), chosen.map(|a| (a.left, a.top))));
+                    }
+                    anchor = chosen;
+                }
             }
             let shown_text = if resp.preedit.len() > 1 && resp.preedit.iter().any(|p| p.focused) {
                 resp.preedit.iter().map(|p| if p.focused { format!("[{}]", p.text) } else { p.text.clone() }).collect::<String>()
@@ -1078,6 +1086,26 @@ mod juce {
         choose(tsf, window, click, commit)
     }
 
+    /// 일반 조합 창 모드: TSF 위치가 창 안이면 그대로. 아니면(게임처럼 위치를 안 알려 주는 앱) 창 안의 마지막 클릭 아래,
+    /// 그것도 없으면 창 아래쪽 가운데.
+    pub fn fallback(tsf: Option<RECT>, window: RECT) -> Option<RECT> {
+        let click = CLICK.with(|c| c.get()).map(|(p, _)| p);
+        Some(fallback_for(tsf, window, click))
+    }
+
+    pub fn fallback_for(tsf: Option<RECT>, window: RECT, click: Option<POINT>) -> RECT {
+        let inside_pt = |x: i32, y: i32| x >= window.left && x < window.right && y >= window.top && y < window.bottom;
+        if let Some(r) = tsf.filter(|r| inside_pt(r.left, r.top)) {
+            return r;
+        }
+        if let Some(p) = click.filter(|p| inside_pt(p.x, p.y)) {
+            return RECT { left: p.x, top: p.y + 12, right: p.x + 1, bottom: p.y + 28 };
+        }
+        let x = window.left + (window.right - window.left) / 3;
+        let y = window.bottom - (window.bottom - window.top) / 6;
+        RECT { left: x, top: y, right: x + 1, bottom: y + 16 }
+    }
+
     /// 마지막 확정 뒤의 클릭이 있으면 그 아래, 아니면 TSF 위치 (창 밖이면 클릭 자리).
     pub fn choose(tsf: Option<RECT>, window: RECT, click: Option<(POINT, Instant)>, commit: Option<Instant>) -> Option<RECT> {
         let below = |p: POINT| RECT { left: p.x, top: p.y + 12, right: p.x + 1, bottom: p.y + 28 };
@@ -1093,8 +1121,17 @@ mod juce {
 
 /// 진단 로그가 켜져 있는가 (DLL 옆 MULTILANG_TIP_DEBUG).
 fn debug_enabled() -> bool {
-    let dll = String::from_utf16_lossy(&module_path());
-    std::path::Path::new(&dll).parent().is_some_and(|d| d.join("MULTILANG_TIP_DEBUG").exists())
+    debug_dir().is_some()
+}
+
+/// 진단 로그 폴더 기준: DLL 옆, 32비트 DLL(x86\)이면 한 단계 위 (설치 폴더). MULTILANG_TIP_DEBUG가 있을 때만.
+fn debug_dir() -> Option<std::path::PathBuf> {
+    let dll = std::path::PathBuf::from(String::from_utf16_lossy(&module_path()));
+    let mut dir = dll.parent()?.to_path_buf();
+    if dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("x86")) {
+        dir = dir.parent()?.to_path_buf();
+    }
+    dir.join("MULTILANG_TIP_DEBUG").exists().then_some(dir)
 }
 
 /// 조합 창 위치 진단: TSF가 준 위치와 함께 시스템 커서, IMM 조합·후보 창 위치, 포커스 창, DPI를 남긴다.
@@ -1753,5 +1790,26 @@ mod lock_key_tests {
         assert!(is_ja_lock_key(WPARAM(0xF4)));
         assert_eq!(request_key(WPARAM(0xF3)).vk, VK_HANGUL);
         assert!(!is_ja_lock_key(WPARAM(0x41)));
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::juce::fallback_for;
+    use windows::Win32::Foundation::{POINT, RECT};
+
+    const WIN: RECT = RECT { left: 589, top: 316, right: 1971, bottom: 1123 };
+
+    #[test]
+    fn corner_anchor_is_replaced() {
+        let corner = RECT { left: 2559, top: 1391, right: 2560, bottom: 1391 };
+        // 클릭이 창 안에 있으면 그 아래
+        assert_eq!(fallback_for(Some(corner), WIN, Some(POINT { x: 900, y: 1000 })).left, 900);
+        // 없으면 창 아래쪽
+        let r = fallback_for(Some(corner), WIN, None);
+        assert!(r.left > WIN.left && r.left < WIN.right && r.top > 900 && r.top < WIN.bottom);
+        // 창 안의 위치는 그대로
+        let ok = RECT { left: 700, top: 500, right: 716, bottom: 516 };
+        assert_eq!(fallback_for(Some(ok), WIN, Some(POINT { x: 900, y: 1000 })), ok);
     }
 }
