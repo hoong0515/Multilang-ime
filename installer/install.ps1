@@ -1,7 +1,10 @@
 # Multilang IME installer (per machine). Run from the unpacked release folder:
-#   powershell -ExecutionPolicy Bypass -File install.ps1 [-Dest <folder>] [-NoLanguageList] [-DryRun]
+#   powershell -ExecutionPolicy Bypass -File install.ps1 [-Language ko|ja|en] [-Dest <folder>] [-NoLanguageList] [-DryRun]
 # Needs administrator rights (asks with UAC when started normally).
+# -Language: the input language the IME is listed under (taskbar language label, and the language apps
+#   use to pick a font). It types Korean, English and Japanese whichever is chosen. Default: ko.
 param(
+    [ValidateSet("ko", "ja", "en")][string]$Language = "ko",
     [string]$Dest = (Join-Path $env:ProgramFiles "MultilangIME"),
     [switch]$NoLanguageList,
     [switch]$DryRun
@@ -10,7 +13,12 @@ $ErrorActionPreference = "Stop"
 $Src = $PSScriptRoot
 $TaskName = "MultilangIME Backend"
 $Clsid = "{05C49E35-3B3F-4BC3-8D48-EF1336F9CD4D}"
-$ProfileKo = "{6E9DBD5F-4A03-40FA-8186-35DEDF98E150}"
+# language -> (LANGID, profile GUID, language tag) as registered by the TIP (tip/src/lib.rs PROFILES)
+$Profiles = @{
+    ko = @("0412", "{6E9DBD5F-4A03-40FA-8186-35DEDF98E150}", "ko-KR")
+    ja = @("0411", "{B21CF121-71FB-4C56-8B91-3BAE60CB6E74}", "ja-JP")
+    en = @("0409", "{681B9E1A-408F-4AF6-8EB3-AF2C9283A82F}", "en-US")
+}
 
 function Step($msg, [scriptblock]$do) {
     Write-Host "- $msg"
@@ -20,7 +28,7 @@ function Step($msg, [scriptblock]$do) {
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin -and -not $DryRun) {
-    $argv = @("-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-Dest", "`"$Dest`"")
+    $argv = @("-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-Dest", "`"$Dest`"", "-Language", $Language)
     if ($NoLanguageList) { $argv += "-NoLanguageList" }
     Start-Process powershell -Verb RunAs -ArgumentList $argv -Wait
     return
@@ -91,14 +99,29 @@ Step "start menu shortcut" {
     $sh.Save()
 }
 
-# 7. Add the Korean profile to this user's input methods
+# 7. Show the IME under the chosen language only (this user): enable that profile, disable the others,
+#    and put it in that language's input methods (adding the language if it is missing).
+Step "enable the '$Language' profile only" {
+    foreach ($k in $Profiles.Keys) {
+        $p = $Profiles[$k]
+        $key = "HKCU:\Software\Microsoft\CTF\TIP\$Clsid\LanguageProfile\0x0000$($p[0])\$($p[1])"
+        New-Item -Path $key -Force | Out-Null
+        New-ItemProperty -Path $key -Name Enable -Value ([int]($k -eq $Language)) -PropertyType DWord -Force | Out-Null
+    }
+}
 if (-not $NoLanguageList) {
-    Step "add input method to the language list" {
-        $tip = "0412:$Clsid$ProfileKo"
+    Step "add input method to the language list ($($Profiles[$Language][2]))" {
+        $p = $Profiles[$Language]
+        $tip = "$($p[0]):$Clsid$($p[1])"
+        $prefix = $p[2].Split("-")[0]
         $list = Get-WinUserLanguageList
-        $ko = $list | Where-Object { $_.LanguageTag -eq "ko" -or $_.LanguageTag -eq "ko-KR" } | Select-Object -First 1
-        if (-not $ko) { $list.Add("ko-KR"); $ko = $list | Where-Object { $_.LanguageTag -like "ko*" } | Select-Object -First 1 }
-        if (-not ($ko.InputMethodTips -contains $tip)) { $ko.InputMethodTips.Add($tip) }
+        # ours only under the chosen language
+        foreach ($l in $list) {
+            foreach ($t in @($l.InputMethodTips | Where-Object { $_ -like "*$Clsid*" -and $_ -ne $tip })) { [void]$l.InputMethodTips.Remove($t) }
+        }
+        $lang = $list | Where-Object { $_.LanguageTag -eq $prefix -or $_.LanguageTag -like "$prefix-*" } | Select-Object -First 1
+        if (-not $lang) { $list.Add($p[2]); $lang = $list | Where-Object { $_.LanguageTag -like "$prefix*" } | Select-Object -First 1 }
+        if (-not ($lang.InputMethodTips -contains $tip)) { $lang.InputMethodTips.Add($tip) }
         Set-WinUserLanguageList $list -Force
     }
 }

@@ -54,6 +54,11 @@ const PROFILE_KO: GUID = GUID::from_u128(0x6e9dbd5f_4a03_40fa_8186_35dedf98e150)
 const PROFILE_JA: GUID = GUID::from_u128(0xb21cf121_71fb_4c56_8b91_3bae60cb6e74);
 const LANG_KO: u16 = 0x0412;
 const LANG_JA: u16 = 0x0411;
+const PROFILE_EN: GUID = GUID::from_u128(0x681b9e1a_408f_4af6_8eb3_af2c9283a82f);
+const LANG_EN: u16 = 0x0409;
+/// 등록하는 언어 프로필. 어느 언어 밑에 보일지는 설치할 때 고른다 (installer/install.ps1 -Language):
+/// 고른 언어만 켜고 입력 방법 목록에 넣는다. 작업 표시줄 언어 표시와 앱의 글꼴 선택이 이 언어를 따른다.
+const PROFILES: [(u16, GUID); 3] = [(LANG_KO, PROFILE_KO), (LANG_JA, PROFILE_JA), (LANG_EN, PROFILE_EN)];
 const DESCRIPTION: &str = "Multilang IME";
 
 static DLL_MODULE: AtomicIsize = AtomicIsize::new(0);
@@ -1240,7 +1245,7 @@ fn register_tsf() -> Result<()> {
         unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)? };
     let desc = utf16(DESCRIPTION);
     let icon = module_path();
-    for (lang, profile) in [(LANG_KO, PROFILE_KO), (LANG_JA, PROFILE_JA)] {
+    for (lang, profile) in PROFILES {
         unsafe {
             profiles.RegisterProfile(&CLSID_TEXT_SERVICE, lang, &profile, &desc, &icon, 0, HKL::default(), 0, true, 0)?
         };
@@ -1259,7 +1264,7 @@ fn unregister_tsf() {
             None,
             CLSCTX_INPROC_SERVER,
         ) {
-            for (lang, profile) in [(LANG_KO, PROFILE_KO), (LANG_JA, PROFILE_JA)] {
+            for (lang, profile) in PROFILES {
                 let _ = profiles.UnregisterProfile(&CLSID_TEXT_SERVICE, lang, &profile, 0);
             }
         }
