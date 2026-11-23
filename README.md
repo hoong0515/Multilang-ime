@@ -309,6 +309,7 @@ python poc/mozc/run_poc.py
 - 일반 앱 접속은 그대로 정상. 검색창 입력은 사용자가 확인함 (Claude의 화면 조작 권한으로는 셸 검색창에 입력할 수 없음).
 - 후보창이 검색창 뒤에 가려지던 문제: 검색창은 몰입형(immersive) 화면이라 일반 창보다 위 층에 그려진다. 후보창(조합 창 포함)을 띄울 때 소유자를 포커스 창의 최상위 창으로 맞춰(`candwin::follow_owner`, GWLP_HWNDPARENT) 같은 층 위에 뜨게 했다. 메모장 후보창은 그대로 정상.
 - 그래도 검색창에서는 후보창이 안 보인다. 진단 로그(샌드박스 앱도 쓸 수 있는 `deploy\x64\logs`, `MULTILANG_TIP_DEBUG`가 있을 때): SearchHost 안에서 위치 계산 성공, 창 생성 성공, 소유자 `Windows.UI.Core.CoreWindow`, `SetWindowPos` 성공, `IsWindowVisible`=true. 즉 창은 떠 있지만 셸 검색 화면이 일반 창보다 높은 창 층(band)에 있어 그 뒤에 가려진다. 일반 `CreateWindowEx` 창은 topmost·소유자 지정으로도 그 층 위에 갈 수 없다. 해결 후보: (1) 후보창을 별도 프로세스로 띄우고 UIAccess(서명 + Program Files 설치 필요)로 높은 층 사용, (2) TSF UI 요소(ITfCandidateListUIElement)로 후보 목록을 시스템에 넘기기(셸 검색창이 그려 주는지 불확실).
+- UI 요소 방식 시험 (2026-11-23): 후보창을 띄울 때 `ITfUIElementMgr::BeginUIElement`로 `ITfCandidateListUIElement`(`tip/src/uielement.rs`)를 알리고, 앱이 그리겠다고(bShow=false) 하면 우리 창을 숨기게 했다. 검색창(SearchHost)과 메모장 모두 bShow=true(IME가 그려라)로 답해 검색창 문제는 해결되지 않았다. 게임 등 UI-less 앱용으로 코드는 유지 (UI-less 지원 등록 카테고리 `GUID_TFCAT_TIPCAP_UIELEMENTENABLED`는 아직 등록하지 않음, 관리자 재등록 필요). 남은 해결책: 별도 후보창 프로세스 + UIAccess (서명·Program Files 설치와 함께, 배포 준비 단계).
 
 ## 알려진 한계
 

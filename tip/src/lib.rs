@@ -14,6 +14,7 @@
 mod candwin;
 mod client;
 mod display;
+mod uielement;
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -160,6 +161,11 @@ struct TextService {
     window_open: Cell<bool>,
     /// 백엔드가 실패한 직후에는 이 시각까지 부르지 않는다 (키마다 시간 초과를 기다려 앱이 버벅이지 않게)
     offline_until: Cell<Option<Instant>>,
+    /// 후보 목록 UI 요소 (TSF에 알린 것): 내용, 객체, 요소 id, 우리 창으로 그릴지
+    ui_data: Rc<RefCell<uielement::Data>>,
+    ui_elem: RefCell<Option<ITfCandidateListUIElement>>,
+    ui_id: Cell<Option<u32>>,
+    ui_own: Cell<bool>,
 }
 
 impl TextService {
@@ -172,6 +178,10 @@ impl TextService {
             shown: RefCell::new(String::new()),
             window_open: Cell::new(false),
             offline_until: Cell::new(None),
+            ui_data: Rc::new(RefCell::new(uielement::Data::default())),
+            ui_elem: RefCell::new(None),
+            ui_id: Cell::new(None),
+            ui_own: Cell::new(true),
         }
     }
 }
@@ -350,18 +360,88 @@ impl TextService_Impl {
             if let Ok(mut s) = self.state.try_borrow_mut() {
                 s.floating = if text.is_empty() { None } else { Some((text.clone(), context.as_raw() as usize)) };
             }
+            let own = match (&resp.candidates, text.is_empty()) {
+                (Some(list), false) => self.ui_update(context, list),
+                _ => {
+                    self.ui_end();
+                    true
+                }
+            };
+            let list = if own { resp.candidates.as_ref() } else { None };
             match anchor {
-                Some(a) if !text.is_empty() => candwin::show_floating(&shown_text, resp.candidates.as_ref(), a),
+                Some(a) if !text.is_empty() => candwin::show_floating(&shown_text, list, a),
                 _ => candwin::hide(),
             }
             return hr.ok();
         }
-        // 후보창: 응답에 후보가 있으면 조합 아래에 띄우고, 없으면 숨긴다
+        // 후보창: 응답에 후보가 있으면 UI 요소로 알리고, 앱이 그리지 않으면 조합 아래에 우리 창을 띄운다
         match (&resp.candidates, anchor) {
-            (Some(list), Some(anchor)) if !resp.preedit.is_empty() => candwin::show(list, anchor),
-            _ => candwin::hide(),
+            (Some(list), Some(anchor)) if !resp.preedit.is_empty() => {
+                if self.ui_update(context, list) {
+                    candwin::show(list, anchor);
+                } else {
+                    candwin::hide();
+                }
+            }
+            _ => {
+                self.ui_end();
+                candwin::hide();
+            }
         }
         hr.ok()
+    }
+
+    /// 후보 목록을 TSF UI 요소로 알리거나 갱신한다. 우리 창으로 그려야 하면 true (앱이 그리겠다고 하면 false).
+    fn ui_update(&self, context: &ITfContext, list: &ipc::CandidateList) -> bool {
+        let Some(tm) = self.state.try_borrow().ok().and_then(|s| s.thread_mgr.clone()) else { return true };
+        let Ok(mgr) = tm.cast::<ITfUIElementMgr>() else { return true };
+        if let Ok(mut d) = self.ui_data.try_borrow_mut() {
+            let changed_items = d.items != list.items;
+            d.items = list.items.clone();
+            d.selected = list.selected as u32;
+            d.docmgr = unsafe { context.GetDocumentMgr() }.ok();
+            d.flags |= TF_CLUIE_SELECTION | TF_CLUIE_DOCUMENTMGR;
+            if changed_items {
+                d.flags |= TF_CLUIE_COUNT | TF_CLUIE_STRING | TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE;
+            }
+        }
+        if let Some(id) = self.ui_id.get() {
+            let _ = unsafe { mgr.UpdateUIElement(id) };
+            return self.ui_own.get();
+        }
+        let elem: ITfCandidateListUIElement = uielement::CandidateUi { data: self.ui_data.clone() }.into();
+        let mut show = BOOL::from(true);
+        let mut id = 0u32;
+        match unsafe { mgr.BeginUIElement(&elem, &mut show, &mut id) } {
+            Ok(()) => {
+                debug_note(&format!("uielement begin id={id} show={}", show.as_bool()));
+                self.ui_id.set(Some(id));
+                self.ui_own.set(show.as_bool());
+                if let Ok(mut d) = self.ui_data.try_borrow_mut() {
+                    d.shown = show.as_bool();
+                }
+                *self.ui_elem.borrow_mut() = Some(elem);
+                show.as_bool()
+            }
+            Err(e) => {
+                debug_note(&format!("uielement begin failed {e:?}"));
+                true
+            }
+        }
+    }
+
+    /// 후보 목록 UI 요소를 닫는다.
+    fn ui_end(&self) {
+        if let Some(id) = self.ui_id.take() {
+            if let Some(tm) = self.state.try_borrow().ok().and_then(|s| s.thread_mgr.clone()) {
+                if let Ok(mgr) = tm.cast::<ITfUIElementMgr>() {
+                    let _ = unsafe { mgr.EndUIElement(id) };
+                }
+            }
+            debug_note("uielement end");
+        }
+        *self.ui_elem.borrow_mut() = None;
+        self.ui_own.set(true);
     }
 
     /// 지금 입력칸에서 IME를 꺼야 하는가: 앱이 키보드를 꺼 둔 문맥, 빈 문맥, 또는 비밀번호·숫자 등 용도의 칸.
@@ -418,6 +498,7 @@ impl TextService_Impl {
         self.journal.borrow_mut().clear();
         self.shown.borrow_mut().clear();
         self.window_open.set(false);
+        self.ui_end();
         candwin::hide();
         let _ = self.call(&Request::Reset);
     }
