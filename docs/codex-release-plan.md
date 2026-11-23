@@ -42,6 +42,7 @@
    - 할 일: 현재 설치판에서 (a) 같은 판 재설치, (b) 제거(`uninstall.cmd`), (c) 재부팅 뒤 폴더·예약 정리 확인, (d) 새로 설치, (e) `-Language en`/`ja` 설치 후 작업 표시줄·메모장 글꼴 확인 뒤 `ko`로 되돌리기.
    - 기준: 제거 뒤 `C:\Program Files\MultilangIME`, 등록(HKLM CLSID 64·32, CTF\TIP — `regsvr32 /u`의 DllUnregisterServer가 TSF API로 지운다), 작업, 시작 메뉴, 앱 및 기능, HKCU 프로필 설정이 모두 없고, 재부팅 뒤 `PendingFileRenameOperations`에 우리 경로가 없음. 사용자 데이터(`%LOCALAPPDATA%\multilang-ime`)는 `-RemoveUserData`일 때만 지워짐.
    - 확인: `tests/installer-files.ps1` (관리자·일반 둘 다), 레지스트리 조회. **[사용자]** 언어 목록이 바뀌는 `-Language en` 시험은 사용자 승인 후.
+   - 진행 (2026-11-24): `tests/install-cycle.ps1`(관리자)로 (a) 재설치 (b) 제거 (d) 다시 설치 **통과**. 첫 실행에서 찾은 문제 3개 고침(ea7a1d1): 제거 뒤 TSF 등록 키 남음, 재부팅 전 재설치 거부, 재부팅 삭제 중복 예약. 그 전에 찾은 것(f90530f): 제거 때 쓰는 중 DLL을 원래 이름으로 예약해 재부팅 전 재설치한 DLL이 재부팅 때 지워짐. 재부팅 예약에는 `.old` 사본과 (비어 있지 않아 지워지지 않을) `x86` 폴더만 남음. 남은 것: (c) 재부팅 뒤 `install-cycle.ps1 -AfterReboot`, (e) `-Language en`/`ja` **[사용자]**.
 
 3. **설치 프로그램 형식 결정과 포장** **[사용자]**
    - 선택지: (a) 지금처럼 zip + `install.cmd`, (b) Inno Setup .exe가 같은 스크립트를 부름(언어 고르기 화면, 관리자 요청, 제거는 기존 `uninstall.ps1`), (c) MSI(WiX).
