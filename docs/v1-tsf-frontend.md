@@ -138,7 +138,7 @@ Output {
 
 - 이름 있는 파이프, 메시지 모드. 요청 하나에 응답 하나. 메시지는 protobuf (Mozc와 같은 방식).
 - Mozc와 달리 요청마다 연결을 새로 열지 않고, **TIP 인스턴스(스레드)당 연결 하나를 유지**한다. 키마다 연결을 여는 비용과, Mozc 개념 검증에서 본 "파이프 바쁨" 재시도를 피하려는 것이다.
-- 보안: 같은 사용자만 접속할 수 있게 파이프 DACL을 건다. 스토어 앱(AppContainer)에서도 TIP가 접속해야 하므로, AppContainer SID 접근을 허용한다. Mozc도 AppContainer 때문에 이벤트·뮤텍스 이름에 `Local\` 접두사를 쓴다 (`base/const.h` 주석).
+- 보안: 파이프 이름은 사용자 SID로 만들고(`ipc::win::user_pipe_name`), 백엔드는 `FILE_FLAG_FIRST_PIPE_INSTANCE`로 첫 인스턴스만 만든다. TIP는 붙은 파이프의 소유자가 자기 계정(또는 Administrators)인지 확인한다 (`ipc::win::pipe_owner_trusted`, 다른 계정이 먼저 만든 파이프 거부). 같은 사용자만 접속할 수 있게 파이프 DACL을 건다. 스토어 앱(AppContainer)에서도 TIP가 접속해야 하므로, AppContainer SID 접근을 허용한다. Mozc도 AppContainer 때문에 이벤트·뮤텍스 이름에 `Local\` 접두사를 쓴다 (`base/const.h` 주석).
 - 백엔드는 사용자 로그온 때 시작(작업 스케줄러 또는 TIP 첫 활성화 때 실행). 하나만 뜨도록 뮤텍스로 막는다.
 - **M2 실측에서 확인한 문제**: M2는 TIP가 백엔드를 직접 띄운다. 그런데 메모장 같은 패키지(스토어) 앱이 띄운 자식 프로세스는 그 앱의 패키지 문맥을 물려받아, 파일 쓰기가 앱별 가상 폴더(`Packages\…\LocalCache`)로 돌려지고 앱이 끝날 때 함께 종료될 수 있다. 백엔드는 앱과 무관하게 떠야 하므로, **로그온 시 시작(작업 스케줄러, `tools/backend-task.ps1`)으로 바꿨다** (2026-11-23). TIP의 직접 실행은 비상용으로만 남긴다.
 

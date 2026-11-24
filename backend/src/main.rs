@@ -205,20 +205,30 @@ fn main() {
     }
     // 셸 검색창용 후보창 대행 프로세스 (UIAccess, Program Files 설치본)
     candhost::start();
-    let user = std::env::var("USERNAME").unwrap_or_default();
-    let name = wide(&ipc::pipe_name(&user));
-    log(&format!("started, pipe {}", ipc::pipe_name(&user)));
+    let Some(pipe_name) = ipc::win::user_pipe_name() else {
+        log("cannot read user SID: not starting");
+        return;
+    };
+    let name = wide(&pipe_name);
+    log(&format!("started, pipe {pipe_name}"));
 
     // 샌드박스 앱(작업 표시줄 검색창 등) 안의 TIP도 접속할 수 있는 보안 설정
     let sa = pipe_security::pipe_security();
     log(if sa.is_some() { "pipe security: user + AppContainer, low integrity" } else { "pipe security: default (AppContainer apps cannot connect)" });
     let per_process = PER_PROCESS.get_or_init(pipe::PerProcess::new);
+    let mut first = true;
     loop {
-        let Some(h) = pipe::create(&name, sa.as_ref()) else {
+        let Some(h) = pipe::create(&name, sa.as_ref(), first) else {
+            if first {
+                // 같은 사용자의 백엔드는 뮤텍스로 막으니, 이 이름을 먼저 가진 것은 다른 프로그램이다
+                log("pipe name already taken by another process: not starting");
+                return;
+            }
             log("CreateNamedPipeW failed");
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
         };
+        first = false;
         let connected =
             unsafe { ConnectNamedPipe(h, None) }.is_ok() || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
         if !connected {

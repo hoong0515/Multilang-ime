@@ -49,12 +49,14 @@ impl Client {
         Self { pipe: None, event: None, last_spawn: None, generation: 0 }
     }
 
-    fn pipe_name() -> Vec<u16> {
-        wide(&ipc::pipe_name(&std::env::var("USERNAME").unwrap_or_default()))
+    /// 사용자 SID로 만든 파이프 이름 (프로세스 동안 같으므로 한 번만 구한다).
+    fn pipe_name() -> Option<&'static [u16]> {
+        static NAME: std::sync::OnceLock<Option<Vec<u16>>> = std::sync::OnceLock::new();
+        NAME.get_or_init(|| ipc::win::user_pipe_name().map(|n| wide(&n))).as_deref()
     }
 
     fn open() -> Option<HANDLE> {
-        let name = Self::pipe_name();
+        let name = Self::pipe_name()?;
         let h = unsafe {
             CreateFileW(
                 PCWSTR(name.as_ptr()),
@@ -67,6 +69,14 @@ impl Client {
             )
         }
         .ok()?;
+        // 다른 계정이 같은 이름으로 먼저 만든 파이프면 키를 보내지 않는다 (ipc::win 참고)
+        if !ipc::win::pipe_owner_trusted(h) {
+            crate::debug_note("pipe: server owner not trusted");
+            unsafe {
+                let _ = CloseHandle(h);
+            }
+            return None;
+        }
         let mode = PIPE_READMODE_MESSAGE;
         if unsafe { SetNamedPipeHandleState(h, Some(&mode), None, None) }.is_err() {
             unsafe {

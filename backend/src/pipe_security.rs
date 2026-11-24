@@ -5,40 +5,14 @@
 //!   (샌드박스 앱은 사용자 확인과 샌드박스 확인을 둘 다 통과해야 하므로 다른 사용자의 앱은 들어올 수 없다)
 //! - SACL: 무결성 레이블 Low (샌드박스 앱은 Low 무결성이라, 기본(Medium) 레이블이면 쓰기가 막힌다)
 
-use std::ffi::c_void;
-
-use windows::core::{PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
-use windows::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-};
-use windows::Win32::Security::{GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER};
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-/// 현재 사용자의 SID 문자열 (S-1-5-21-...).
-fn user_sid() -> Option<String> {
-    unsafe {
-        let mut token = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;
-        let mut len = 0u32;
-        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
-        let mut buf = vec![0u8; len as usize];
-        let r = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr() as *mut c_void), len, &mut len);
-        let _ = CloseHandle(token);
-        r.ok()?;
-        let user = &*(buf.as_ptr() as *const TOKEN_USER);
-        let mut s = PWSTR::null();
-        ConvertSidToStringSidW(user.User.Sid, &mut s).ok()?;
-        let out = s.to_string().ok();
-        let _ = LocalFree(Some(HLOCAL(s.0 as *mut c_void)));
-        out
-    }
-}
+use windows::core::PCWSTR;
+use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
 /// 파이프 생성에 쓸 보안 특성. 만들지 못하면 None (기본 보안으로 만든다).
 /// 돌려준 SECURITY_ATTRIBUTES가 가리키는 보안 설명자는 프로세스가 끝날 때까지 쓰므로 해제하지 않는다.
 pub fn pipe_security() -> Option<SECURITY_ATTRIBUTES> {
-    let sid = user_sid()?;
+    let sid = ipc::win::user_sid()?;
     let sddl = format!("D:(A;;GA;;;SY)(A;;GA;;;{sid})(A;;GRGW;;;AC)(A;;GRGW;;;S-1-15-2-2)S:(ML;;NW;;;LW)");
     let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
     let mut sd = PSECURITY_DESCRIPTOR::default();

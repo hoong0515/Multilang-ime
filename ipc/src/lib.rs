@@ -5,7 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 사용자별 파이프 이름. 같은 사용자 세션의 TIP와 백엔드만 만난다.
+#[cfg(windows)]
+pub mod win;
+
+/// 사용자별 파이프 이름 (`user`는 사용자 SID, `win::user_pipe_name`). 같은 사용자의 TIP와 백엔드만 만난다.
 pub fn pipe_name(user: &str) -> String {
     let safe: String = user.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     format!(r"\\.\pipe\multilang-ime.{safe}")

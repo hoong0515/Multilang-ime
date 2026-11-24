@@ -17,7 +17,7 @@ use windows::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel, TokenIsAppContainer,
     SECURITY_ATTRIBUTES, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
-use windows::Win32::Storage::FileSystem::{ReadFile, FILE_FLAGS_AND_ATTRIBUTES, PIPE_ACCESS_DUPLEX};
+use windows::Win32::Storage::FileSystem::{ReadFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows::Win32::System::Pipes::{
     CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
@@ -36,11 +36,14 @@ pub const MAX_APP_NAME: usize = 260;
 const BUF_SIZE: u32 = 16 * 1024;
 
 /// 파이프 인스턴스 하나를 만든다. 듣는 인스턴스 하나를 더 둘 수 있게 상한은 연결 수 + 1.
-pub fn create(name: &[u16], sa: Option<&SECURITY_ATTRIBUTES>) -> Option<HANDLE> {
+/// `first`면 첫 인스턴스로만 만든다 (`FILE_FLAG_FIRST_PIPE_INSTANCE`): 다른 프로세스가 같은 이름을
+/// 먼저 만들어 두었으면 실패한다.
+pub fn create(name: &[u16], sa: Option<&SECURITY_ATTRIBUTES>, first: bool) -> Option<HANDLE> {
+    let flags = if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { FILE_FLAGS_AND_ATTRIBUTES(0) };
     let h = unsafe {
         CreateNamedPipeW(
             PCWSTR(name.as_ptr()),
-            PIPE_ACCESS_DUPLEX | FILE_FLAGS_AND_ATTRIBUTES(0),
+            PIPE_ACCESS_DUPLEX | flags,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             (MAX_CONNECTIONS + 1) as u32,
             BUF_SIZE,
@@ -234,7 +237,7 @@ mod tests {
     /// 서버 인스턴스를 만들고, 다른 스레드에서 클라이언트로 `messages`를 차례로 보낸 뒤, 서버 쪽 읽기 결과를 돌려준다.
     fn roundtrip(tag: &str, messages: Vec<Vec<u8>>, reads: usize) -> Vec<Read> {
         let name = unique_name(tag);
-        let server = create(&wide(&name), None).expect("create pipe");
+        let server = create(&wide(&name), None, true).expect("create pipe");
         let client_name = name.clone();
         let client = std::thread::spawn(move || {
             let mut f = loop {
@@ -259,6 +262,37 @@ mod tests {
         }
         client.join().unwrap();
         out
+    }
+
+    #[test]
+    fn first_instance_refuses_taken_name() {
+        let name = wide(&unique_name("first"));
+        let a = create(&name, None, true).expect("first instance");
+        // 이미 있는 이름: 첫 인스턴스로는 못 만들고, 이어지는 인스턴스로는 만든다
+        assert!(create(&name, None, true).is_none());
+        let b = create(&name, None, false).expect("next instance");
+        unsafe {
+            let _ = CloseHandle(b);
+            let _ = CloseHandle(a);
+        }
+    }
+
+    #[test]
+    fn client_trusts_own_pipe() {
+        use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_NONE, OPEN_EXISTING};
+        use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+        let name = wide(&unique_name("owner"));
+        let sa = crate::pipe_security::pipe_security();
+        let server = create(&name, sa.as_ref(), true).expect("create pipe");
+        let client = unsafe {
+            CreateFileW(PCWSTR(name.as_ptr()), GENERIC_READ.0 | GENERIC_WRITE.0, FILE_SHARE_NONE, None, OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES(0), None)
+        }
+        .expect("open pipe");
+        assert!(ipc::win::pipe_owner_trusted(client));
+        unsafe {
+            let _ = CloseHandle(client);
+            let _ = CloseHandle(server);
+        }
     }
 
     #[test]
@@ -358,7 +392,7 @@ mod tests {
 
         const SE_GROUP_INTEGRITY: u32 = 0x20;
         let name = unique_name("lowil");
-        let server = create(&wide(&name), None).expect("create pipe");
+        let server = create(&wide(&name), None, true).expect("create pipe");
         unsafe {
             let mut token = HANDLE::default();
             OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY, &mut token)

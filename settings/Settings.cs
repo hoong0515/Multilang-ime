@@ -313,13 +313,23 @@ class SettingsForm : Form
 
 static class Backend
 {
-    // ipc::pipe_name 과 같은 규칙: 사용자 이름의 영숫자 외 글자는 '_'
+    // ipc::pipe_name 과 같은 규칙: 사용자 SID의 영숫자 외 글자는 '_'
     static string PipeName()
     {
         var sb = new StringBuilder("multilang-ime.");
-        foreach (var c in Environment.UserName)
+        foreach (var c in System.Security.Principal.WindowsIdentity.GetCurrent().User.Value)
             sb.Append(c < 128 && char.IsLetterOrDigit(c) ? c : '_');
         return sb.ToString();
+    }
+
+    // ipc::win::pipe_owner_trusted 와 같은 확인: 파이프 소유자가 이 사용자이거나 Administrators
+    static bool OwnerTrusted(NamedPipeClientStream p)
+    {
+        var owner = p.GetAccessControl().GetOwner(typeof(System.Security.Principal.SecurityIdentifier))
+            as System.Security.Principal.SecurityIdentifier;
+        if (owner == null) return false;
+        return owner.Equals(System.Security.Principal.WindowsIdentity.GetCurrent().User)
+            || owner.IsWellKnown(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid);
     }
 
     public static bool Call(string json, out string reply, out string error)
@@ -331,6 +341,7 @@ static class Backend
             using (var p = new NamedPipeClientStream(".", PipeName(), PipeDirection.InOut))
             {
                 p.Connect(1000);
+                if (!OwnerTrusted(p)) { error = "pipe owner not trusted"; return false; }
                 p.ReadMode = PipeTransmissionMode.Message;
                 var req = Encoding.UTF8.GetBytes(json);
                 p.Write(req, 0, req.Length);
