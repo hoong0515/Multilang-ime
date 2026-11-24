@@ -33,7 +33,7 @@
 
 ### 알려진 제한 / Known limitations
 
-- 이 판은 서명되지 않았다. Windows SmartScreen 경고가 뜰 수 있고, 작업 표시줄 검색창의 후보창은 가려진다(입력은 됨). 서명은 SignPath Foundation에 신청 예정 ([Code signing policy](docs/code-signing-policy.md)).
+- 이 판은 서명되지 않았다. Windows SmartScreen 경고가 뜰 수 있고, 작업 표시줄 검색창의 후보창은 가려진다(입력은 됨). ([Code signing policy](docs/code-signing-policy.md))
   This release is unsigned: SmartScreen may warn, and the candidate window in the taskbar search box stays hidden (typing works).
 - 앱이 입력칸 용도를 알려 주지 않는 비밀번호 칸에서는 자동으로 꺼지지 않을 수 있다 (한/영 키로 English 고정).
 - `to-do`, `so-so`처럼 양쪽이 모두 로마자로 읽히는 영어 하이픈 단어는 처음에 일본어가 1순위가 될 수 있다. 후보에서 영어를 한 번 고르면 학습되어 다음부터 영어로 나온다.
@@ -45,4 +45,4 @@
 
 ## Code signing policy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/) (once approved; see [docs/code-signing-policy.md](docs/code-signing-policy.md)).
+Releases are currently unsigned; see [docs/code-signing-policy.md](docs/code-signing-policy.md).

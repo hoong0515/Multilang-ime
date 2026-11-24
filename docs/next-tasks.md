@@ -51,7 +51,7 @@
 - 백엔드가 ShellExecute로 띄운다 (Program Files 설치본 먼저, 30초마다 확인, 실패 시 간격 늘림). 서명·보안 위치가 아니면 거부(5)되고 로그만 남는다.
 - 확인함: UIAccess 없는 시험 빌드(`CANDHOST_NO_UIACCESS=1`)로 메시지·그리기·쪽 표시·숨기기·한 개만 실행.
 - 확인함 (2026-11-23): `tools\uiaccess-dev-setup.ps1`(사용자가 관리자로 실행: 자체 서명 인증서 신뢰 + 서명 + Program Files 복사) 뒤 백엔드가 띄우고(ShellExecute 42), 작업 표시줄 검색창에서 후보창이 검색 화면 위에 보임 (사용자 확인).
-- 남은 것: 배포판은 정식 서명(SignPath 등)이 있어야 같은 동작. 개발용 인증서는 시험이 끝나면 `-Remove`로 지운다.
+- 남은 것: 배포판은 정식 코드 서명이 있어야 같은 동작. 개발용 인증서는 시험이 끝나면 `-Remove`로 지운다.
 
 ## A6. 카카오톡 (2026-11-23, 해결)
 - 32비트 앱: 개발판에 32비트 TIP가 등록돼 있지 않았음 → `deployd\multilang_tip.dll` 등록 (설치판은 원래 함께 등록).
@@ -112,7 +112,7 @@
 11. **(부분 완료) 설치 프로그램** — 절차는 `docs/release.md`.
     - 완료: zip 패키지(`installeruild-release.ps1`), `install.ps1`/`uninstall.ps1` — Program Files 복사, 64·32비트 등록, 앱 컨테이너 읽기 권한, UI-less 카테고리, Users 그룹 로그온 작업, 한국어 입력 목록 추가. 실제 설치 시험은 아래.
     - (완료 2026-11-24) 실제 설치·제거·재설치·재부팅 시험(`tests/install-cycle.ps1`), 설치 .exe(Inno Setup), UIAccess 후보창 프로세스, 시작 메뉴·앱 및 기능 등록. v0.1.0 공개.
-    - 남은 것: 코드 서명(SignPath 신청 중).
+    - 남은 것: 코드 서명(방법 미정).
 12. **(완료) 설정 화면 최소판**: `settings\Settings.cs` (WinForms, .NET Framework 4.x 기본 csc, `settingsuild.ps1`) → `MultilangIME-Settings.exe`, 설치 때 시작 메뉴 바로 가기.
     - 사용할 언어(`languages.ko/ja`, 영어는 항상): 백엔드가 요청마다 판정기 언어 목록에 반영 (조합 중에는 안 바꿈).
     - 자동 꺼짐 프로그램(`disabled_apps`): TIP가 새 연결마다 `Hello{app}`으로 실행 파일 이름을 알리고, 백엔드가 Test/Key를 먹지 않음.
@@ -129,7 +129,7 @@
 
 ## E. 2026-11-24 이후 남은 것
 
-- 코드 서명: SignPath Foundation 신청(사용자) → 승인 후 CI 서명 단계, 서명판 릴리스, 서명판에서 검색창 후보창 확인 (`docs/code-signing-policy.md`).
+- 코드 서명: 방법 미정(유료 인증서, PC 전용 인증서, 서명 없음 중 사용자 결정). 서명하면 CI 서명 단계, 서명판에서 검색창 후보창 확인 (`docs/code-signing-policy.md`).
 - 오른쪽 Alt·半角/全角 언어 고정 실측 (영어(미국)·일본어 배열, TSF가 Alt 키를 넘겨주는지).
 - 한워드 위치 (A8): 클릭 위치 보완 또는 UI Automation, 사용자 결정으로 보류.
 - 확인표 남은 칸: Word, 앱별 비밀번호 칸.

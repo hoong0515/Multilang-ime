@@ -70,7 +70,7 @@ GitHub Actions(`.github/workflows/build.yml`)가 같은 순서로 빌드한다. 
 
 ## Code signing policy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/) (신청 준비 중, 승인 전 릴리스는 서명 없음). 서명 대상, 팀 역할, 개인정보 정책은 [docs/code-signing-policy.md](docs/code-signing-policy.md).
+현재 릴리스는 서명되지 않는다. 서명 대상, 팀 역할, 개인정보 정책은 [docs/code-signing-policy.md](docs/code-signing-policy.md).
 
 개인정보: 이 프로그램은 사용자나 설치·운영하는 사람이 직접 요청하지 않는 한 어떤 정보도 다른 네트워크 시스템으로 보내지 않는다 (입력 내용·학습 기록·사용자 사전은 PC 밖으로 나가지 않는다).
 

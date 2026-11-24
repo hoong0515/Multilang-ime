@@ -22,7 +22,7 @@ powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.
 
 - 액션은 커밋 SHA로 고정 (Mozc 저장소와 같은 방식).
 - git에 없는 입력은 모두 CI에서 다시 만든다: 모델(개발용과 같은 바이트 확인), hanja.txt(체크섬), Mozc 도우미(고정 커밋 소스 빌드).
-- 코드 서명(SignPath 등)은 이 `release` 아티팩트(또는 그 안의 exe/dll)를 서명 단계에 넘기는 식으로 붙인다.
+- 코드 서명은 이 `release` 아티팩트(또는 그 안의 exe/dll)를 서명 단계에 넘기는 식으로 붙인다.
 - 공개 저장소 https://github.com/hoong0515/Multilang-ime 에서 동작 확인 (2026-11-24). v0.1.0 릴리스 파일은 태그 빌드 45243627966의 결과물.
 
 ## 설치 스크립트 (`installer\install.ps1`)
@@ -73,4 +73,4 @@ powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.
 
 ## 아직 남은 것
 
-`docs/codex-release-plan.md` 참고. 요약: SignPath Foundation 신청(사용자) → 승인 후 CI 서명 단계와 서명판 릴리스(검색창 후보창은 서명판에서만 보임), 오른쪽 Alt·半角/全角 실측, 확인표의 남은 칸.
+`docs/codex-release-plan.md` 참고. 요약: 코드 서명 방법 결정(사용자) → CI 서명 단계와 서명판 릴리스(검색창 후보창은 서명판에서만 보임), 오른쪽 Alt·半角/全角 실측, 확인표의 남은 칸.

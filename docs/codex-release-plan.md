@@ -58,7 +58,8 @@
 
 5. **코드 서명** **[사용자]**
    - 진행 (2026-11-24): SignPath로 결정(사용자). 저장소 공개·push 완료(사용자). CI 트리거가 `main`이라 한 번도 안 돌았음 → `master`로 고침. 서명 정책 `docs/code-signing-policy.md` + README "Code signing policy" 절 추가. CI 전체 통과(fugashi 고정, 설치 .exe 버전 형식 고침), **서명 없는 v0.1.0 공개 (2026-11-24, https://github.com/hoong0515/Multilang-ime/releases/tag/v0.1.0, 태그 빌드 45243627966의 결과물)**. 남은 순서: SignPath 신청(사용자, Download URL = 릴리스 페이지) → 승인 후 CI에 서명 단계 → 서명판(v0.1.1 등).
-   - 할 일: SignPath Foundation 신청 (OSI 라이선스, 공개 저장소, CI 빌드, 2단계 인증). 승인 후 CI에 서명 단계: DLL(x64·x86), `backend.exe`, `MultilangIME-CandWin.exe`, `MultilangIME-Settings.exe`, `mozc_stdio.exe`, 설치 .exe. 릴리스 문구 "Free code signing provided by SignPath.io, certificate by SignPath Foundation".
+   - SignPath Foundation은 공개 인지도 부족으로 거절됨 (2026-11-24). 서명 방법은 미정.
+   - 할 일: 서명 방법을 정하면 CI에 서명 단계: DLL(x64·x86), `backend.exe`, `MultilangIME-CandWin.exe`, `MultilangIME-Settings.exe`, `mozc_stdio.exe`, 설치 .exe. 릴리스 문구는 서명 방법에 맞춰.
    - 기준: 서명된 설치판에서 검색창 후보창이 보인다 (UIAccess는 서명 + Program Files 조건).
    - 참고: Azure Artifact Signing은 국내 개인 불가, Store(MSIX)는 TSF IME에 맞지 않음 (`docs/release.md`).
 

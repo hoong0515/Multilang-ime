@@ -1,9 +1,6 @@
 # Code signing policy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
-
-> Status: the application to the SignPath Foundation is in preparation. Releases are unsigned until it is approved;
-> this policy applies to every signed release from then on.
+> Status: releases are currently unsigned. This policy applies to every signed release once a code signing certificate is in place.
 
 ## What is signed
 
@@ -27,7 +24,7 @@ and are not re-signed. Product name and version in the signed files are "Multila
 
 - Changes from people outside the team are merged only after review by a committer.
 - Every signing request is approved manually by an approver, for that release only.
-- Team members use multi-factor authentication for GitHub and SignPath.
+- Team members use multi-factor authentication for GitHub and the signing service.
 
 ## Privacy policy
 
@@ -49,7 +46,6 @@ Programs and Features or with `uninstall.cmd` in the program folder, which delet
 
 # 코드 서명 정책 (요약)
 
-- 서명: SignPath.io가 무료로 제공하고, 인증서는 SignPath Foundation 명의다 (게시자 이름이 "SignPath Foundation"으로 보인다).
 - 이 저장소의 GitHub Actions가 태그(`v*`)에서 빌드한 파일만 서명한다. 릴리스마다 승인자가 직접 승인한다.
 - 개인정보: 입력 내용, 학습 기록, 사용자 사전은 PC 밖으로 나가지 않는다. 원격 수집, 업데이트 확인, 네트워크 기능이 없다.
-- 현재 상태: SignPath Foundation 신청 준비 중. 승인 전 릴리스는 서명되지 않는다.
+- 현재 상태: 릴리스는 서명되지 않는다. 인증서를 마련하면 이 정책대로 서명한다.
