@@ -145,6 +145,7 @@ Output {
 ## 9. 설치와 등록
 
 - 하나의 TIP CLSID를 **한국어(0x0412)와 일본어(0x0411) 두 언어 프로필**로 등록하는 안을 기본으로 검토한다. 사용자는 Windows 언어 설정의 한국어 또는 일본어 아래에서 이 IME를 고른다. 한 프로필만 쓰면 다른 언어 앱에서 IME 목록에 안 보이는 문제가 있어서다.
+- 등록되는 DLL은 작은 stub(`tipstub`, `multilang_tip.dll`)이고, 실제 코드(`tip`, `multilang_tip_impl.dll`)는 `impl\<SHA-256 앞 16자>\`에 둔다. stub은 옆의 `multilang_tip.impl`(상대 경로 한 줄)을 읽어 본체를 로드하고, 본체에 자기 경로를 알려 준다(`MultilangSetHost`: 등록·backend.exe·설정 화면 위치의 기준). 설치는 본체를 새 폴더에 넣은 뒤 가리키는 파일을 마지막에 쓰고, 이전 본체는 그 뒤에 지운다(쓰는 중이면 이름을 바꿔 재부팅 때). 같은 내용의 파일은 덮어쓰지 않으므로 stub은 보통 그대로다. Meltype의 stub/impl 방식을 참고했다.
 - TIP DLL은 32비트·64비트 둘 다 필요하다 (32비트 앱용). Mozc도 `mozc_tip32.dll`, `mozc_tip64.dll`을 따로 둔다. ARM64는 v1 이후.
 - 스토어 앱을 위해 설치 폴더와 DLL에 `ALL APPLICATION PACKAGES` 읽기·실행 권한을 준다.
 - 코드 서명: 배포 전 필수 (백신 오탐 방지).

@@ -7,7 +7,7 @@
 Only binaries built from this repository by the GitHub Actions workflow [`.github/workflows/build.yml`](../.github/workflows/build.yml)
 from a tagged commit (`v*`):
 
-- `multilang_tip.dll` (64-bit and 32-bit), `backend.exe`, `MultilangIME-CandWin.exe`, `MultilangIME-Settings.exe`
+- `multilang_tip.dll` and `multilang_tip_impl.dll` (64-bit and 32-bit), `backend.exe`, `MultilangIME-CandWin.exe`, `MultilangIME-Settings.exe`
 - `mozc\mozc_stdio.exe` (built in the same workflow from the pinned [google/mozc](https://github.com/google/mozc) source and the
   helper sources in [`mozc-helper/`](../mozc-helper/))
 - the installer, once there is one

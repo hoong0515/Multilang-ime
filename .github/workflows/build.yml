@@ -63,7 +63,7 @@ jobs:
       - name: Test
         shell: pwsh
         run: |
-          cargo test --release -p engine -p ipc -p backend -p tip
+          cargo test --release -p engine -p ipc -p backend -p tip -p tipstub
           # the UIAccess manifest stops the test exe from running; the next build step relinks with it
           $env:CANDHOST_NO_UIACCESS = "1"
           cargo test --release -p candhost
@@ -71,8 +71,8 @@ jobs:
       - name: Build x64 and x86
         shell: pwsh
         run: |
-          cargo build --release -p tip -p backend -p candhost
-          cargo build --release -p tip --target i686-pc-windows-msvc
+          cargo build --release -p tip -p tipstub -p backend -p candhost
+          cargo build --release -p tip -p tipstub --target i686-pc-windows-msvc
 
       - name: Settings app
         shell: pwsh
@@ -88,9 +88,11 @@ jobs:
           if-no-files-found: error
           path: |
             target/release/multilang_tip.dll
+            target/release/multilang_tip_impl.dll
             target/release/backend.exe
             target/release/MultilangIME-CandWin.exe
             target/i686-pc-windows-msvc/release/multilang_tip.dll
+            target/i686-pc-windows-msvc/release/multilang_tip_impl.dll
             target/settings/MultilangIME-Settings.exe
             data/engine_model.json
             third_party/libhangul/hanja.txt

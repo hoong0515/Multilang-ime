@@ -8,6 +8,8 @@
 # - Folders are removed only when they end up empty.
 # - Files still loaded by running apps (the TIP DLLs) are renamed and booked for deletion at the next
 #   reboot (MoveFileEx MOVEFILE_DELAY_UNTIL_REBOOT; needs administrator rights).
+# - A file that is already there with the same content is left alone (the TIP stub stays put while apps use
+#   it), and the TIP pointer files (*.impl) are written last, after the implementation they name.
 
 # The new name is an IntPtr so that a real NULL reaches the API: PowerShell turns $null into "" for a
 # [string] parameter, and MoveFileEx(path, "", DELAY_UNTIL_REBOOT) fails with "path not found".
@@ -96,7 +98,8 @@ function Test-SameUserAsDesktop {
 # diagnostic files (MULTILANG_TIP_DEBUG, tip-debug.log, logs\)? Folders count when they hold only such files.
 function Test-OnlyLeftovers([string]$dest) {
     $dest = Get-FullDir $dest
-    $ours = @($Legacy010 | ForEach-Object { Split-Path $_ -Leaf }) | Select-Object -Unique
+    # (plus the TIP implementation, which lives in impl\<hash>\ since the stub/impl split)
+    $ours = @(@($Legacy010 | ForEach-Object { Split-Path $_ -Leaf }) + "multilang_tip_impl.dll") | Select-Object -Unique
     $files = @(Get-ChildItem -LiteralPath $dest -Force -Recurse -File -ErrorAction SilentlyContinue)
     if ($files.Count -eq 0) { return $false }
     foreach ($f in $files) {
@@ -162,13 +165,35 @@ function Get-OldCopies([string]$dest, [string]$rel) {
         Where-Object { $_.Name -match ('^' + [regex]::Escape($leaf) + '\.old\d+$') } | ForEach-Object { $_.FullName })
 }
 
+# Old TIP implementation folders (impl\<16 hex>\ under $dest and $dest) that an earlier update left
+# behind: renamed copies (multilang_tip_impl.dll.old<digits>) that are no longer in use, then empty folders.
+# Matches only that exact pattern, so it cannot reach other files. Returns paths booked for reboot.
+function Remove-StaleImpl([string]$dest) {
+    $booked = @()
+    foreach ($root in (Join-Path $dest "impl"), (Join-Path $dest "x86\impl")) {
+        if (-not (Test-Path -LiteralPath $root -PathType Container) -or -not (Test-SafeTarget $dest $root)) { continue }
+        foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -Force | Where-Object { $_.Name -match '^[0-9a-f]{16}$' })) {
+            if (-not (Test-SafeTarget $dest $d.FullName)) { continue }
+            foreach ($f in @(Get-ChildItem -LiteralPath $d.FullName -File -Force | Where-Object { $_.Name -match '^multilang_tip_impl\.dll\.old\d+$' })) {
+                if ((Remove-NowOrAtReboot $f.FullName) -eq "booked") { $booked += $f.FullName }
+            }
+            if (@(Get-ChildItem -LiteralPath $d.FullName -Force).Count -eq 0) {
+                Remove-Item -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    return , $booked
+}
+
 # Copy the package into $dest, replacing our earlier files; writes the manifest. Returns paths booked for reboot.
 function Install-PackageFiles([string]$src, [string]$dest, [string[]]$previous, [string[]]$exclude) {
     $src = Get-FullDir $src
     $dest = Get-FullDir $dest
     if (Test-ForbiddenDest $dest) { throw "refusing to install into $dest" }
     $booked = @()
-    $files = @(Get-ChildItem -LiteralPath $src -Recurse -File | Where-Object { $exclude -notcontains $_.Name })
+    # pointer files (*.impl) last: a TIP loading while we copy must not find a pointer to a missing file
+    $files = @(Get-ChildItem -LiteralPath $src -Recurse -File | Where-Object { $exclude -notcontains $_.Name } |
+        Sort-Object { $_.Extension -eq ".impl" })
     $newList = @($files | ForEach-Object { $_.FullName.Substring($src.Length).TrimStart('\') })
     New-Item -ItemType Directory -Force $dest | Out-Null
     # old copies of our files, and files of the previous version that this one no longer ships
@@ -177,18 +202,15 @@ function Install-PackageFiles([string]$src, [string]$dest, [string[]]$previous, 
             if ((Test-SafeTarget $dest $o) -and (Remove-NowOrAtReboot $o) -eq "booked") { $booked += $o }
         }
     }
-    foreach ($rel in $previous) {
-        $p = Join-Path $dest $rel
-        if (($newList -notcontains $rel) -and ($rel -ne $ManifestName) -and (Test-SafeTarget $dest $p) -and (Test-Path -LiteralPath $p -PathType Leaf)) {
-            $b = Remove-OrMoveAside $p
-            if ($b) { $booked += $b }
-        }
-    }
     foreach ($f in $files) {
         $rel = $f.FullName.Substring($src.Length).TrimStart('\')
         $target = Join-Path $dest $rel
         if (-not (Test-SafeTarget $dest $target)) { throw "refusing to write through a junction or link: $target" }
         New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+        if ((Test-Path -LiteralPath $target -PathType Leaf) -and
+            (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash) {
+            continue   # same file already there (it may be loaded by apps): nothing to replace
+        }
         if (Test-Path -LiteralPath $target) {
             try { Remove-Item -LiteralPath $target -Force -ErrorAction Stop }
             catch {
@@ -200,6 +222,16 @@ function Install-PackageFiles([string]$src, [string]$dest, [string[]]$previous, 
         }
         Copy-Item -LiteralPath $f.FullName $target -Force
     }
+    # files of the previous version that this one no longer ships (an old TIP implementation folder):
+    # after the copy, so the old pointer never names a file that is already gone
+    foreach ($rel in $previous) {
+        $p = Join-Path $dest $rel
+        if (($newList -notcontains $rel) -and ($rel -ne $ManifestName) -and (Test-SafeTarget $dest $p) -and (Test-Path -LiteralPath $p -PathType Leaf)) {
+            $b = Remove-OrMoveAside $p
+            if ($b) { $booked += $b }
+        }
+    }
+    foreach ($b in (Remove-StaleImpl $dest)) { $booked += $b }
     ($newList + $ManifestName) | Set-Content -LiteralPath (Join-Path $dest $ManifestName) -Encoding UTF8
     return , $booked
 }

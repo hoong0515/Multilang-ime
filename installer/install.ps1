@@ -34,8 +34,13 @@ if (-not $admin -and -not $DryRun) {
     return
 }
 
-foreach ($f in @("multilang_tip.dll", "backend.exe", "MultilangIME-Settings.exe", "MultilangIME-CandWin.exe", "engine_model.json", "hanja.txt", "x86\multilang_tip.dll")) {
+foreach ($f in @("multilang_tip.dll", "multilang_tip.impl", "backend.exe", "MultilangIME-Settings.exe", "MultilangIME-CandWin.exe", "engine_model.json", "hanja.txt", "x86\multilang_tip.dll", "x86\multilang_tip.impl")) {
     if (-not (Test-Path (Join-Path $Src $f))) { throw "missing in package: $f" }
+}
+# the stub loads the implementation named in multilang_tip.impl (tipstub): it must be in the package
+foreach ($d in ".", "x86") {
+    $rel = (Get-Content -LiteralPath (Join-Path $Src "$d\multilang_tip.impl") -Raw).Trim()
+    if (-not (Test-Path (Join-Path $Src "$d\$rel"))) { throw "missing in package: $d\$rel" }
 }
 
 if (-not ((Test-Path (Join-Path $Src "mozc\mozc_stdio.exe")) -or (Test-Path (Join-Path $Src "mozc\mozc_server.exe")))) {
@@ -56,7 +61,9 @@ Step "stop old backend" {
         Stop-Process -Force
 }
 
-# 2. Copy files (a DLL still loaded by an app is renamed and deleted at the next reboot); writes the manifest
+# 2. Copy files; writes the manifest. The TIP implementation goes to a new impl\<hash>\ folder and the
+#    stub is skipped when unchanged, so apps using the old version keep it; an old file still loaded is
+#    renamed and deleted at the next reboot.
 Step "copy files to $Dest" {
     $script:booked = Install-PackageFiles $Src $Dest $previous @("install.ps1", "install.cmd")
 }

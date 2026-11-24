@@ -66,7 +66,7 @@ impl InputModeButton {
 
 /// 설정 화면 실행 파일: DLL 옆, 없으면 한 단계 위 (32비트 DLL은 x86 폴더에 있다).
 fn open_settings() {
-    let dll = String::from_utf16_lossy(&crate::module_path());
+    let dll = String::from_utf16_lossy(&crate::host_path());
     let Some(dir) = std::path::Path::new(dll.trim_end_matches('\0')).parent() else { return };
     let exe = [dir.join("MultilangIME-Settings.exe"), dir.join("..").join("MultilangIME-Settings.exe")]
         .into_iter()

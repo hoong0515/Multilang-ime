@@ -44,7 +44,7 @@ Their license terms apply to those components.
   Ngrams, the Leeds Internet Corpus, and others). `engine_model.json` is an adaptation
   and is shared under the same license.
 
-## Rust crates (compiled into multilang_tip.dll and backend.exe)
+## Rust crates (compiled into multilang_tip.dll, multilang_tip_impl.dll and backend.exe)
 
 | Crate | License |
 | --- | --- |

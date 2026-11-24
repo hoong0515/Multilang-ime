@@ -52,6 +52,8 @@ powershell -ExecutionPolicy Bypass -File installer\build-release.ps1 -Version 0.
 
 설치판과 개발판은 같은 CLSID·작업 이름을 쓴다. 설치하면 등록과 작업이 Program Files 쪽으로 바뀐다.
 개발판으로 돌아가려면 관리자 권한으로 `regsvr32 deploy\x64\multilang_tip.dll`, `tools\backend-task.ps1 install`.
+개발판 폴더에는 stub(`multilang_tip.dll`)과 본체(`multilang_tip_impl.dll`)를 나란히 둔다 (가리키는 파일
+`multilang_tip.impl`이 없으면 stub은 옆의 본체를 읽는다). 설치판은 본체를 `impl\<해시>\`에 둔다 (`installer\build-release.ps1`).
 
 ## 파일 정보와 앱 목록
 

@@ -208,7 +208,50 @@ public static extern IntPtr LoadLibraryEx(string path, IntPtr file, int flags);
     cmd /c rmdir "$jlink"
     Check (Test-ForbiddenDest (Join-Path $env:windir "System32\MultilangIME")) "folder under Windows: forbidden"
 
-    Write-Host "11. deleting in a forbidden folder is refused"
+    Write-Host "11. TIP stub + implementation: unchanged stub stays, new implementation in a new folder"
+    $tpkg = Join-Path $base "tippkg"
+    $tdest = Join-Path $base "TipDest"
+    New-Item -ItemType Directory "$tpkg\impl\aaaa" | Out-Null
+    "stub v1" | Set-Content "$tpkg\multilang_tip.dll"
+    "impl v1" | Set-Content "$tpkg\impl\aaaa\multilang_tip_impl.dll"
+    "impl\aaaa\multilang_tip_impl.dll" | Set-Content "$tpkg\multilang_tip.impl"
+    $null = Install-PackageFiles $tpkg $tdest @() @()
+    $order = @(Get-Content "$tdest\install-manifest.txt")
+    Check ($order[-2] -eq "multilang_tip.impl") "pointer file written after the files it names"
+    # next version: same stub, new implementation folder; both the stub and the old implementation are in use
+    Remove-Item "$tpkg\impl" -Recurse -Force
+    New-Item -ItemType Directory "$tpkg\impl\bbbb" | Out-Null
+    "impl v2" | Set-Content "$tpkg\impl\bbbb\multilang_tip_impl.dll"
+    "impl\bbbb\multilang_tip_impl.dll" | Set-Content "$tpkg\multilang_tip.impl"
+    $stubLock = [IO.File]::Open("$tdest\multilang_tip.dll", 'Open', 'Read', 'Read, Delete')
+    $implLock = [IO.File]::Open("$tdest\impl\aaaa\multilang_tip_impl.dll", 'Open', 'Read', 'Read, Delete')
+    $tb = Install-PackageFiles $tpkg $tdest (Get-PreviousInstall $tdest $null) @()
+    $stubLock.Close(); $implLock.Close()
+    Check (@(Get-ChildItem $tdest -Filter "multilang_tip.dll.old*").Count -eq 0) "unchanged stub in use: not renamed"
+    Check ((Get-Content "$tdest\impl\bbbb\multilang_tip_impl.dll") -eq "impl v2") "new implementation in its own folder"
+    Check ((Get-Content "$tdest\multilang_tip.impl") -eq "impl\bbbb\multilang_tip_impl.dll") "pointer names the new implementation"
+    Check (@(Get-ChildItem "$tdest\impl\aaaa" -File | Where-Object { $_.Name -eq "multilang_tip_impl.dll" }).Count -eq 0) "old implementation moved out of its name"
+    Check (@($tb | Where-Object { $_ -like "*\impl\aaaa\multilang_tip_impl.dll.old*" }).Count -le 1) "old implementation in use: at most booked for the reboot"
+    $manifest = @(Get-Content "$tdest\install-manifest.txt")
+    Check (($manifest -contains "impl\bbbb\multilang_tip_impl.dll") -and ($manifest -notcontains "impl\aaaa\multilang_tip_impl.dll")) "manifest lists the new implementation only"
+
+    Write-Host "12. old implementation folders are cleaned up by a later install"
+    $sdest = Join-Path $base "StaleDest"
+    New-Item -ItemType Directory "$sdest\impl\0123456789abcdef", "$sdest\x86\impl\fedcba9876543210", "$sdest\impl\notahash" | Out-Null
+    "x" | Set-Content "$sdest\impl\0123456789abcdef\multilang_tip_impl.dll.old638000000000000000"
+    "keep" | Set-Content "$sdest\impl\notahash\multilang_tip_impl.dll.old1"
+    "keep" | Set-Content "$sdest\x86\impl\fedcba9876543210\other.txt"
+    $null = Remove-StaleImpl $sdest
+    Check (-not (Test-Path "$sdest\impl\0123456789abcdef")) "old copy and its empty folder removed"
+    Check (Test-Path "$sdest\impl\notahash\multilang_tip_impl.dll.old1") "folder not named like a hash: untouched"
+    Check (Test-Path "$sdest\x86\impl\fedcba9876543210\other.txt") "other files in a hash folder: untouched"
+    # uninstalled while an app still had the implementation loaded: only its renamed copy is left
+    $udest = Join-Path $base "UninstLeft"
+    New-Item -ItemType Directory "$udest\impl\0123456789abcdef" | Out-Null
+    "x" | Set-Content "$udest\impl\0123456789abcdef\multilang_tip_impl.dll.old638000000000000000"
+    Check (Test-OnlyLeftovers $udest) "renamed implementation copy counts as our leftover (reinstall before reboot)"
+
+    Write-Host "13. deleting in a forbidden folder is refused"
     Check (Throws { Remove-InstalledFiles $env:windir @("notepad.exe") }) "Remove-InstalledFiles refuses Windows folder"
 }
 finally {

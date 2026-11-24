@@ -93,7 +93,7 @@ impl Client {
             return;
         }
         self.last_spawn = Some(Instant::now());
-        let dll = crate::module_path();
+        let dll = crate::host_path();
         let dll = String::from_utf16_lossy(&dll);
         let Some(mut dir) = std::path::Path::new(&dll).parent() else { return };
         if !dir.join("backend.exe").exists() {

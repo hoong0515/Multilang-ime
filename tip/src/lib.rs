@@ -83,6 +83,26 @@ pub(crate) fn module_path() -> Vec<u16> {
     buf
 }
 
+/// stub(`multilang_tip.dll`, tipstub)이 이 DLL을 읽은 뒤 알려 준 자기 경로.
+static HOST_PATH: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+
+/// stub이 부른다: 등록·백엔드·설정 화면 위치의 기준이 될 stub 경로 (끝의 NUL 포함 가능).
+#[unsafe(no_mangle)]
+extern "system" fn MultilangSetHost(path: PCWSTR) {
+    if path.is_null() {
+        return;
+    }
+    if let Ok(s) = unsafe { path.to_string() } {
+        let _ = HOST_PATH.set(s.encode_utf16().collect());
+    }
+}
+
+/// 등록되는 DLL의 경로: stub을 거쳐 읽혔으면 stub, 아니면 이 DLL (개발 때 impl을 직접 등록한 경우).
+/// impl은 `impl\<해시>\` 폴더에 있으므로 설치 폴더 기준 파일(backend.exe 등)은 이 경로로 찾는다.
+pub(crate) fn host_path() -> Vec<u16> {
+    HOST_PATH.get().cloned().unwrap_or_else(module_path)
+}
+
 // ---------------------------------------------------------------- 키
 fn key_down(vk: u16) -> bool {
     unsafe { (GetKeyState(vk as i32) as u16 & 0x8000) != 0 }
@@ -1209,7 +1229,7 @@ fn debug_enabled() -> bool {
 
 /// 진단 로그 폴더 기준: DLL 옆, 32비트 DLL(x86\)이면 한 단계 위 (설치 폴더). MULTILANG_TIP_DEBUG가 있을 때만.
 fn debug_dir() -> Option<std::path::PathBuf> {
-    let dll = std::path::PathBuf::from(String::from_utf16_lossy(&module_path()));
+    let dll = std::path::PathBuf::from(String::from_utf16_lossy(&host_path()));
     let mut dir = dll.parent()?.to_path_buf();
     if dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("x86")) {
         dir = dir.parent()?.to_path_buf();
@@ -1764,7 +1784,7 @@ fn register_com_class() -> Result<()> {
                         None, &mut key, None)
             .ok()?;
     }
-    let res = set_reg_sz(key, PCWSTR::null(), &module_path())
+    let res = set_reg_sz(key, PCWSTR::null(), &host_path())
         .and_then(|_| set_reg_sz(key, w!("ThreadingModel"), &utf16("Apartment")));
     unsafe {
         let _ = RegCloseKey(key);
@@ -1793,7 +1813,7 @@ fn register_tsf() -> Result<()> {
     let profiles: ITfInputProcessorProfileMgr =
         unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)? };
     let desc = utf16(DESCRIPTION);
-    let icon = module_path();
+    let icon = host_path();
     for (lang, profile) in PROFILES {
         unsafe {
             profiles.RegisterProfile(&CLSID_TEXT_SERVICE, lang, &profile, &desc, &icon, 0, HKL::default(), 0, true, 0)?

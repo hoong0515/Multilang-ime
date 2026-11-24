@@ -20,9 +20,9 @@ $Root = Split-Path $PSScriptRoot -Parent
 Set-Location $Root
 
 if (-not $NoBuild) {
-    cargo build --release -p tip -p backend -p candhost
+    cargo build --release -p tip -p tipstub -p backend -p candhost
     if ($LASTEXITCODE) { throw "x64 build failed" }
-    cargo build --release -p tip --target i686-pc-windows-msvc
+    cargo build --release -p tip -p tipstub --target i686-pc-windows-msvc
     if ($LASTEXITCODE) { throw "x86 build failed" }
     & "$Root\settings\build.ps1"
 }
@@ -41,11 +41,23 @@ function Put($from, $to) {
     if (-not (Test-Path $from)) { throw "missing: $from" }
     Copy-Item $from (Join-Path $Out $to) -Recurse -Force
 }
-Put "target\release\multilang_tip.dll" "multilang_tip.dll"
+# TIP: the registered stub (multilang_tip.dll) loads the implementation from impl\<hash>\ named in
+# multilang_tip.impl (tipstub/src/lib.rs). A new version lands in a new folder, so an update never has to
+# replace a DLL that apps have loaded.
+function Put-Tip([string]$built, [string]$to) {
+    Put "$built\multilang_tip.dll" "$to\multilang_tip.dll"
+    $implDll = "$built\multilang_tip_impl.dll"
+    if (-not (Test-Path $implDll)) { throw "missing: $implDll" }
+    $h = (Get-FileHash $implDll -Algorithm SHA256).Hash.Substring(0, 16).ToLowerInvariant()
+    New-Item -ItemType Directory -Force (Join-Path $Out "$to\impl\$h") | Out-Null
+    Put $implDll "$to\impl\$h\multilang_tip_impl.dll"
+    [IO.File]::WriteAllText((Join-Path $Out "$to\multilang_tip.impl"), "impl\$h\multilang_tip_impl.dll")
+}
+Put-Tip "target\release" "."
 Put "target\release\backend.exe" "backend.exe"
 Put "target\release\MultilangIME-CandWin.exe" "MultilangIME-CandWin.exe"
 Put "target\settings\MultilangIME-Settings.exe" "MultilangIME-Settings.exe"
-Put "target\i686-pc-windows-msvc\release\multilang_tip.dll" "x86\multilang_tip.dll"
+Put-Tip "target\i686-pc-windows-msvc\release" "x86"
 Put "data\engine_model.json" "engine_model.json"
 Put "third_party\libhangul\hanja.txt" "hanja.txt"
 

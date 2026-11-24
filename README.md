@@ -36,7 +36,8 @@ A Windows IME that detects Korean, English and Japanese as you type, with no swi
 
 | 폴더 | 내용 |
 | --- | --- |
-| `tip/` | TSF 텍스트 서비스 DLL (Rust, x64·x86). 앱 안에서 키를 받아 조합·후보창을 그린다 |
+| `tip/` | TSF 텍스트 서비스 본체 `multilang_tip_impl.dll` (Rust, x64·x86). 앱 안에서 키를 받아 조합·후보창을 그린다 |
+| `tipstub/` | 등록되는 TSF DLL `multilang_tip.dll`. 옆의 `multilang_tip.impl`이 가리키는 본체(`impl\<해시>\`)를 읽는다 (업데이트 때 쓰는 중인 DLL을 바꾸지 않음) |
 | `backend/` | 사용자별 백엔드 (이름 있는 파이프). 판정·후보·학습·Mozc 연결 |
 | `engine/` | 언어 판정 엔진 (두벌식 오토마타, 로마자, n-gram, 격자·비터비) |
 | `mozc/`, `mozc-helper/` | Mozc 클라이언트(protobuf), Mozc 엔진을 감싼 표준 입출력 도우미(C++, Bazel) |
@@ -51,9 +52,9 @@ A Windows IME that detects Korean, English and Japanese as you type, with no swi
 python -m pip install -r requirements-model.txt          # Python 3.10
 python -m ime_v0.export_model                              # data/engine_model.json
 powershell -File tools\fetch-third-party.ps1               # libhangul hanja.txt
-cargo test -p engine -p ipc -p backend -p tip
-cargo build --release -p tip -p backend -p candhost
-cargo build --release -p tip --target i686-pc-windows-msvc
+cargo test -p engine -p ipc -p backend -p tip -p tipstub
+cargo build --release -p tip -p tipstub -p backend -p candhost
+cargo build --release -p tip -p tipstub --target i686-pc-windows-msvc
 powershell -File settings\build.ps1
 powershell -File mozc-helper\build.ps1                     # Mozc 체크아웃 필요: docs/mozc-helper.md
 powershell -File installer\build-release.ps1 -NoBuild      # dist\MultilangIME-<버전>-win.zip

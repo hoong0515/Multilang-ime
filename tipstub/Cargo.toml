@@ -1,0 +1,15 @@
+[package]
+name = "tipstub"
+version = "0.1.0"
+edition = "2024"
+
+# 등록되는 TSF DLL (multilang_tip.dll). 실제 입력기 코드(multilang_tip_impl.dll)를 읽어 COM 호출을 넘긴다.
+[lib]
+name = "multilang_tip"
+crate-type = ["cdylib"]
+
+[dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_SystemServices"] }
+
+[build-dependencies]
+embed-resource = "3"

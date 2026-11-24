@@ -554,6 +554,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tipstub"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "windows",
+]
+
+[[package]]
 name = "toml"
 version = "1.2.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
