@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use engine::detector::{Candidate, Detector, Lang, SharedHistory};
+use engine::detector::{Candidate, Detector, Form, Lang, SharedHistory};
 use engine::hangul::compose;
 use engine::model::Models;
 use engine::romaji::parse;
@@ -1508,6 +1508,41 @@ impl<'m> Session<'m> {
         r
     }
 
+    /// 부분 변환 확정의 판정 학습.
+    /// - 입력 전체: 부분마다 고른 형태를 이은 형태로 (한 부분이라도 바꿨으면 PICK_WEIGHT, 아니면 1).
+    /// - 바꾼 부분: 그 부분 키만 따로 쳐도 반영되게 PICK_WEIGHT로.
+    /// 사전 후보가 섞였거나 형태 길이가 입력과 맞지 않으면(기호 덩어리 등) 입력 전체는 남기지 않는다.
+    fn learn_parts(&self, ps: &Parts) {
+        let Ok(mut h) = self.history.lock() else { return };
+        let mut whole: Form = Vec::new();
+        let mut usable = true;
+        let mut changed = false;
+        for p in &ps.parts {
+            let ch = &p.choices[p.sel];
+            if ch.label == DICT || ch.cand.form.is_empty() {
+                usable = false;
+                continue;
+            }
+            if p.sel != 0 {
+                changed = true;
+                h.record_n(&p.keys, &ch.cand.form, PICK_WEIGHT);
+            }
+            for &(l, n) in &ch.cand.form {
+                match whole.last_mut() {
+                    Some((pl, pn)) if *pl == l => *pn += n,
+                    _ => whole.push((l, n)),
+                }
+            }
+        }
+        let len: usize = whole.iter().map(|&(_, n)| n).sum();
+        if usable && len == self.keys.chars().count() {
+            h.record_n(&self.keys, &whole, if changed { PICK_WEIGHT } else { 1 });
+        }
+        if let Some(p) = &self.history_path {
+            let _ = h.save(p);
+        }
+    }
+
     fn commit(&mut self, tail: &str) -> Response {
         let mut text;
         let deliberate;
@@ -1533,6 +1568,9 @@ impl<'m> Session<'m> {
                 if let Some((l, _)) = ch.cand.form.last() {
                     last = Some(*l);
                 }
+            }
+            if self.learn {
+                self.learn_parts(&ps);
             }
             if let Some(l) = last {
                 self.run = if Some(l) == self.prev { self.run + 1 } else { 1 };
@@ -1679,6 +1717,42 @@ mod tests {
         let h = hist.lock().unwrap();
         assert_eq!(h.count("dkssud", &picked), PICK_WEIGHT as f64);
         assert_eq!(h.count("dkssud", &auto), 1.0);
+    }
+
+    #[test]
+    fn partial_conversion_learns() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(m) = models() else { return };
+        let hist = Arc::new(Mutex::new(History::default()));
+        let mut s = Session::new(&m, hist.clone(), None, None);
+        // 부분 변환을 열었다가 그대로 확정: 입력 전체를 1번
+        type_keys(&mut s, "APIfmf");
+        s.shift_tap();
+        assert!(s.parts.is_some(), "parts");
+        let shown: Form = vec![(Lang::En, 3), (Lang::Ko, 3)];
+        let r = s.key(&key(VK_RETURN, false));
+        assert_eq!(r.commit.as_deref(), Some("API를"));
+        assert_eq!(hist.lock().unwrap().count("APIfmf", &shown), 1.0);
+        // 둘째 부분을 다른 형태로 바꿔 확정: 그 부분과 입력 전체를 PICK_WEIGHT번
+        type_keys(&mut s, "APIfmf");
+        s.shift_tap();
+        let ps = s.parts.as_mut().expect("parts");
+        let part = &mut ps.parts[1];
+        let i = part.choices.iter().position(|c| c.label != DICT && c.cand.form != vec![(Lang::Ko, 3)]).expect("other form");
+        part.sel = i;
+        let picked = part.choices[i].cand.form.clone();
+        let mut whole: Form = vec![(Lang::En, 3)];
+        for &(l, n) in &picked {
+            match whole.last_mut() {
+                Some((pl, pn)) if *pl == l => *pn += n,
+                _ => whole.push((l, n)),
+            }
+        }
+        s.key(&key(VK_RETURN, false));
+        let h = hist.lock().unwrap();
+        assert_eq!(h.count("fmf", &picked), PICK_WEIGHT as f64);
+        assert_eq!(h.count("APIfmf", &whole), PICK_WEIGHT as f64);
+        assert_eq!(h.count("APIfmf", &shown), 1.0);
     }
 
     #[test]
