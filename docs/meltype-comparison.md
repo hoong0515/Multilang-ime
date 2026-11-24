@@ -1,0 +1,125 @@
+# Meltype 1.7.1 과 Multilang IME 비교 (2026-11-24)
+
+먼저 쓴 `docs/meltype-review.md`(2026-11-23, 라이선스·참조 방향)를 잇는 문서다. 이번에는 사용자가 오늘 다시 설치한 Meltype 1.7.1의 설치 폴더·설정 스키마·TIP DLL과 공개 문서(GitHub README, docs/WINDOWS.md, USAGE.md, dev/TSF_DESIGN.md, CODE-SIGNING.md)를 읽고 기능·구조·호환성을 견주었다.
+
+- 직접 입력 시험은 하지 않았다. 오늘 설치본은 Meltype IME(TSF)가 **등록되지 않은 상태**다 (아래 1.3). 등록에는 UAC가 필요하고 입력 설정이 바뀌므로 하지 않았다.
+- 아래 "제안"은 모두 **제안이며 아직 정하지 않았다.** 정하면 `docs/next-tasks.md`로 옮긴다.
+
+## 1. Meltype 요약
+
+### 1.1 무엇인가
+- 일본어 IME. 로마자로 치면 단어마다 영어인지 일본어인지 판정해 半角/全角 전환 없이 섞어 친다. 한국어는 없다.
+- GPL-3.0-or-later, 개인·회사 무료. Windows 10/11 x64·ARM64 (32비트 Windows 미지원, 32비트 앱용 TIP는 있음). macOS·Linux는 미리보기판.
+- GitHub `yksr-melt/Meltype`: 별 약 1.7k, 커밋 약 3.7k, 열린 이슈 약 380. 릴리스 노트의 이슈 번호가 #2100을 넘는다. 활발하다.
+- 대상: 영어가 섞인 일본어를 치는 사람, 특히 코드 편집기·AI 에이전트 프롬프트(`/command`, `$skill`, `@file`)를 치는 사람.
+
+### 1.2 구조 (Windows)
+| 구성 | 내용 |
+| --- | --- |
+| `Meltype.exe` | 트레이 앱 (.NET 10 동봉, `dotnet\` 폴더). 핵심 엔진 `Meltype.Core.dll`(판정·조합·학습·사전·변환)이 여기 하나에만 있다 |
+| TIP | `MeltypeTip.dll`(C++, stub) + `MeltypeTipImpl.dll`(impl). stub만 COM 등록하고, impl은 `impl\<SHA-256>\` 폴더에서 읽는다. 업데이트 때 앱을 다시 열지 않아도 새 impl로 바뀐다. x64·x86·ARM64(ARM64X) |
+| IPC | `\\.\pipe\Meltype.Tip.<사용자 SID>`, 요청마다 JSON 한 개, 키마다 동기 왕복 1회. 시간 초과 800 ms, 넘으면 조합을 확정하고 키를 그대로 앱에 넘긴다. TIP가 `GetNamedPipeServerProcessId`로 서버 프로세스를 확인한다 |
+| Mozc | `mozc\meltype_mozc_helper.exe` (표준 입출력 도우미, 우리 `mozc_stdio.exe`와 같은 방식) |
+| Zenzai | `zenzai\llama-server.exe` + `zenz-v3.2-small-Q5_K_M.gguf`(약 74 MB), 127.0.0.1에만 묶음. 기본 켜짐, 느리거나 없으면 Mozc로 |
+| 후보창 | TIP DLL이 앱 안에서 Direct2D/DirectWrite로 그림 (창 클래스 `MeltypeCandidateWindow`, 뜻풀이 창 `MeltypeMeaningWindow`). 후보를 직접 그리는 앱(게임)에는 `ITfCandidateListUIElement` |
+| 두 가지 입력 방식 | **Meltype IME**(TSF, 기본) / **Meltype 키보드**(저수준 키보드 훅 `WH_KEYBOARD_LL` + 자체 변환 상자 + `SendInput`, 켜져 있는 동안 Windows IME를 끔) |
+| 설치 | 앱은 사용자별(`%LOCALAPPDATA%\Programs\Meltype`, Inno Setup, 관리자 불필요). TIP만 PC 전체 등록(`C:\Program Files\Meltype\tip`, UAC). UAC 전에 "Meltype의 확인"이라는 설명 창을 먼저 띄운다 |
+| 업데이트 | 자동 업데이트(기본 켬, 다음 로그온 때 적용), 프리릴리스 선택, winget. 같은 setup.exe를 조용히 실행 |
+| 서명 | SignPath Foundation 무료 서명을 쓴다고 문서에 있으나, WINDOWS.md는 서명이 없어 SmartScreen 경고가 뜬다고 함 (문서끼리 다름, 실제 서명 여부 미확인) |
+
+### 1.3 이 PC의 지금 상태 (2026-11-24 확인)
+- 설치: Meltype 1.7.1, `C:\Users\jaehw\AppData\Local\Programs\Meltype`, 설정 `%LOCALAPPDATA%\Meltype\config.json` (`Mode = "Tsf"`, `UseZenzai = true`, `AutoUpdate = true`, `JapaneseKeyboardOnly = false`).
+- **TSF IME 미등록**: `HKLM\SOFTWARE\Microsoft\CTF\TIP\{417D801B-…}`, COM `CLSID\{417D801B-…}`, `C:\Program Files\Meltype`가 모두 없다. `%TEMP%\Meltype-setup-ime.log`의 마지막 기록은 등록 해제(재설치 전 제거)다. 재설치 때 IME 등록(UAC)을 하지 않았거나 실패한 것으로 보인다. 그래서 입력 방법 목록에 Meltype이 안 보이는 원인은 `Enable=0`이 아니라 미등록이다. 쓰려면 트레이의 "Meltype IME"에서 다시 등록해야 한다 (UAC).
+- `Meltype.exe`는 지금 실행 중이 아니다.
+- 참고 (확인 안 됨): `Mode`가 Keyboard이고 `JapaneseKeyboardOnly = false`면 Meltype은 입력 언어가 한국어일 때도 전역 키보드 훅으로 키를 가로채고 Windows IME를 끈다. 이전에 "모든 입력칸이 옛 Win32처럼 동작"하던 현상(`docs/claude-code-handoff-2026-11-23.md`)과 관계가 있을 수는 있지만, 지금 설정은 Tsf라 근거는 없다. 함께 쓸 때 주의할 점으로만 적어 둔다.
+
+## 2. 비교표
+
+| 항목 | Meltype 1.7.1 | Multilang IME (지금) |
+| --- | --- | --- |
+| 언어 | 일본어 + 영어 | 한국어 + 영어 + 일본어 |
+| 판정 | 단어마다 영어/로마자 판정, 확정 뒤 다음 단어를 보고 고쳐 확정(`AutoCorrectAfterCommit`: i → 胃 → I want), 판정 이유 로그 | 키 4-gram + 단어 빈도 사전, 토큰 안 구간 분할, 직전 언어·선택 학습 |
+| 일본어 변환 | Mozc 도우미 + Zenzai(신경망, 기본 켬), 입력칸 문맥을 엔진에 넘김 | Mozc 도우미, 가나가 완성되는 대로 라이브 변환 |
+| 변환 키 | Space 변환 / Enter 확정 (MS IME식), Tab 예측, 문절 Shift+←→, F6~F10, Shift+Enter 부분 확정 | Space·Enter 확정, 왼쪽 Shift 탭 후보, Tab 언어 묶음, ←→ 문절 |
+| 그 밖의 입력 기능 | 로마자 오타 고침, 예측 후보, 입력 중 후보 미리보기, 영역 표기, 자음 약어, 계산기·시각·클립보드·재생 중인 곡 후보, 정형문(`;sig`), 괄호 안으로 커서, 영어 앞뒤 자동 띄어쓰기, 일본어 배열(가나·NICOLA·SKY 등) | 한자(한국어 발음), 사용자 사전, 전각 후보, 일본어 기호 |
+| 후보창 | TIP가 앱 안에서 Direct2D로 그림, Win11 MS IME 모양, 라이트/다크·강조색, 9개/쪽, 1.5초 머물면 뜻풀이(위키낱말사전·JMdict) | TIP가 앱 안에서 그림(GDI), Win11 모양·다크·고대비(7a8ce8c), 언어 묶음, 9개/쪽, 검색창은 UIAccess 대행 프로세스 |
+| 조합 표시 | 점선(입력 중) / 가는 선(변환한 문절) / 굵은 선(고르는 문절). 키보드 모드는 자체 상자(겹치기·위·아래, 크기·글꼴·색·투명도 설정), 친 키(로마자) 작게 표시 옵션 | 가는 선 / 점선(모호) / 굵은 선, 조합을 못 받는 앱은 커서 자리 조합 창 |
+| 모드 표시 | 작업 표시줄 あ/A, 전환 때와 **입력칸에 들어갈 때** 커서 옆 あ/A 약 1.2초 (색 지정 가능) | 작업 표시줄 가/A/あ + 자동(점 세 개)/고정(자물쇠), 전환 때 알림 1.2초 |
+| 설정 | 트레이 + 설정 창, 항목 약 80개, 프로필, JSON 스키마(`config.schema.json`, 항목마다 설명), 앱별 규칙·앱 종류(일반/코드/게임/끔) | WinForms 설정 창 4탭, `settings.json` 항목 몇 개, 자동 꺼짐 프로그램 목록 |
+| 앱별 동작 | 프로세스별 켜기/끄기·종류·확정 방법(Qt 앱은 붙여넣기), 코드 종류는 주석·문자열에서만 일본어, 게임 폴더(Steam·Epic·Riot 등)·전체 화면에서 멈춤 | 꺼짐 목록, 옛 입력칸·카카오톡·JUCE는 조합 창 모드(자동 학습), 한워드 위치 보정 |
+| 자동 꺼짐 | 비밀번호 칸, 관리자 앱, 로그인·UAC 화면, 전체 화면, 원격·VM(기본 끔) | 비밀번호·숫자·이메일·URL 칸, 꺼진 문맥, 지정 프로그램. 관리자 앱에서도 동작 |
+| 일시 정지 | 전역 단축키(기본 Ctrl+Alt+F12) | 한/영 → English 고정(IME 거치지 않음) |
+| TIP 구조 | C++ stub + impl (해시 폴더), 업데이트 뒤 앱 재시작 불필요 | Rust DLL 하나, 쓰는 중이면 이름 바꾸고 재부팅 때 삭제, 새 DLL은 앱을 다시 열어야 적용 |
+| IPC | 파이프 이름에 사용자 SID, 서버 프로세스 확인, 시간 초과 800 ms → 확정하고 키 통과 | 파이프 이름에 `%USERNAME%`, DACL·원격 거부·크기/연결 상한·클라이언트 토큰 확인, 서버 확인 없음, 시간 초과 200 ms → 친 키 보존·되살림 |
+| 아키텍처 | x64·x86·ARM64 | x64·x86 |
+| 설치·갱신 | 사용자별 앱 + PC 전체 TIP, 자동 업데이트, winget, 포터블 zip | Program Files 전체 설치(UAC), 설치 .exe·zip, 업데이트는 새 설치 |
+| 로그·개인정보 | 판정 이유 로그(메모리, 트레이에서 보기), 파일 로그·입력 문자 기록 기본 끔. 네트워크는 업데이트 확인과 사용자가 보내는 신고뿐 | 백엔드 로그(느린 요청 등), 네트워크 없음 |
+| 기타 | Discord 상태 표시, 릴리스 노트 창, 신고 양식 | — |
+
+## 3. Multilang IME가 나은 점 (유지할 것)
+- 한국어. Meltype에는 없고, 한·영·일을 한 입력기에서 자동으로 고르는 것은 우리만의 것이다.
+- 토큰 안 구간 분할(`Youtubenidougawoageta`, `APIfmf`), 언어 묶음 후보창.
+- Shift 탭 후보 방식은 Space 확정과 함께 한국어 입력 습관에 맞다. Meltype의 Space=변환을 따를 이유는 없다 (meltype-review.md 결론과 같음).
+- 가볍다. Meltype은 .NET 런타임 동봉 + Zenzai 모델로 설치 크기가 크고, Zenzai를 켜면 llama-server가 상주한다.
+- 시간 초과 때 친 키를 잃지 않고 되살리는 처리는 Meltype(확정하고 넘김)보다 조합 상태를 더 잘 지킨다.
+
+## 4. 제안 (모두 미정, 순위순)
+
+순위는 "사용자가 바로 느끼는 효과 또는 위험 ÷ 작업량" 기준이다.
+
+### 제안 1. 파이프 서버 확인과 사용자 SID 기반 이름 (보안, 중간)
+- 지금: TIP는 `\\.\pipe\multilang-ime.<USERNAME>`에 붙고 서버가 누구인지 확인하지 않는다. 백엔드도 `FILE_FLAG_FIRST_PIPE_INSTANCE`를 쓰지 않는다.
+- 위험: 파이프 이름 공간은 세션 사이에 공유된다. 같은 PC의 다른 사용자(관리자 아님)가 피해자 로그온 전에 같은 이름으로 파이프를 먼저 만들어 두면 피해자의 키 입력을 받을 수 있다. `USERNAME`은 환경 변수라 같은 이름의 다른 계정(도메인/로컬)도 구분하지 못한다.
+- 제안: 이름을 사용자 SID로(`multilang-ime.<SID>`), 백엔드는 첫 인스턴스 플래그로 생성, TIP는 `GetNamedPipeServerProcessId` → 그 프로세스 토큰의 사용자 SID가 자기와 같은지 (가능하면 실행 파일이 설치 폴더의 `multilang-backend.exe`인지) 확인. Meltype이 같은 확인을 한다. 같은 사용자 권한의 프로그램이 먼저 파이프를 만드는 경우는 Meltype 문서처럼 "같은 사용자 키로거와 같은 수준"으로 남는다.
+- 다음 보안 검토(`docs/security-review-*.md`)에서 판단 받을 것.
+
+### 제안 2. 입력칸에 들어갈 때도 모드 표시 (UX, 작음)
+- Meltype은 모드를 바꿀 때뿐 아니라 입력칸에 포커스가 들어갈 때 커서 옆에 あ/A를 잠깐 보인다. 고정 모드(English 고정 등)를 잊고 치기 시작하는 실수를 줄인다.
+- 제안: 고정 모드일 때만(자동일 때는 조용히) 포커스가 새 입력칸으로 오면 지금 알림(1.2초)을 띄우는 옵션. 색 지정은 나중.
+
+### 제안 3. 전체 화면 게임·게임 폴더에서 자동으로 멈춤 (호환성, 작음~중간)
+- Meltype은 전체 화면 창과 Steam·Epic·Riot·EA·Ubisoft·Battle.net·Xbox 게임 폴더의 앱에서 기본으로 키를 받지 않는다.
+- 우리는 사용자가 `disabled_apps`에 직접 넣어야 한다. 게임 중 WASD가 한글로 조합되는 것은 가장 흔한 불만이 될 수 있다.
+- 제안: (a) 전체 화면 전용(foreground가 모니터를 덮는 창) 앱에서 기본 English 통과, (b) 알려진 게임 라이브러리 폴더 아래 실행 파일 기본 꺼짐, 둘 다 설정에서 끌 수 있게. 채팅을 쓰는 게임을 위해 한/영으로 다시 켤 수 있어야 한다.
+
+### 제안 4. TIP stub/impl 분리로 업데이트 뒤 재시작 없애기 (설치·갱신, 큼)
+- 지금은 쓰는 중인 DLL을 이름 바꾸고 재부팅 때 지우며, 열려 있던 앱은 다시 열어야 새 TIP가 적용된다.
+- Meltype: 등록된 stub는 거의 바뀌지 않고, stub가 `impl\<해시>\…Impl.dll`을 읽는다. 새 impl은 새 폴더에 놓이므로 덮어쓰기 충돌이 없고, 새로 활성화되는 TIP부터 새 코드다. Gecko(Firefox)가 해시 이름의 DLL을 거부해서 해시는 폴더 이름에 둔다는 주의점도 있다.
+- 업데이트가 잦아지면(자동 업데이트, 제안 9) 효과가 크다. 지금은 우선순위 중간.
+
+### 제안 5. 판정 이유 보기 (품질·지원, 중간)
+- Meltype은 트레이의 "로그 / 판정 이유"에서 각 단어를 왜 영어/일본어로 봤는지 보여 주고, 입력 문자 기록은 기본 끔이다.
+- 제안: 설정 화면에 "최근 판정" 탭(메모리에만 최근 N개, 키·결과·언어별 점수·학습 반영 여부). 오판정 신고를 받을 때와 자체 튜닝 때 쓸모가 크다. 비밀번호·꺼진 칸은 남기지 않는다. 파일로 남기는 것은 기본 끔.
+
+### 제안 6. 확정 뒤 언어 고치기 (판정 품질, 큼)
+- Meltype `AutoCorrectAfterCommit`: 어느 쪽으로도 읽히는 짧은 단어를 확정한 뒤 다음 단어로 언어가 분명해지면 앞 단어를 고쳐 다시 확정한다.
+- 우리에게도 같은 문제가 있다 (짧은 토큰, `to-do`처럼 처음에 일본어로 나오는 영어 등). 다만 "확정한 단어를 다시 여는 기능은 두지 않는다"(2026-11-23 사용자 결정)와 부딪치고, 앱마다 확정 글을 고치는 일이 위험하다(옛 입력칸·조합 창 모드).
+- 제안: 하려면 TSF 문서를 직접 고칠 수 있는 앱에서만, 직전 한 단어, 끌 수 있는 옵션으로. 먼저 사용자 결정 필요.
+
+### 제안 7. Qt 앱 확인과 붙여넣기 확정 (호환성, 확인부터)
+- Meltype은 Qt 앱(LINE, OBS, DaVinci Resolve)에서 확정을 자동으로 붙여넣기 방식으로 바꾼다. Qt가 TSF 조합을 제대로 받지 못하는 경우가 있다는 뜻이다.
+- 제안: `docs/compat-matrix.md`에 LINE·OBS를 넣어 시험. 문제가 있으면 지금의 조합 창 모드(카카오톡·JUCE)로 충분한지 먼저 보고, 클립보드를 건드리는 붙여넣기는 마지막 수단.
+
+### 제안 8. Esc 한 단계씩 되돌리기 (UX, 작음)
+- Meltype `EscStepsBack`: 漢字 → ひらがな → 로마자 → 지우기. 지금 우리 Esc는 한 번에 친 키 그대로.
+- 제안: 일본어 구간에서 Esc 1회 = 가나, 2회 = 로마자, 3회 = 취소 (보이는 모습이 같은 단계는 건너뜀). 한국어·영어는 지금대로. 옵션으로.
+
+### 제안 9. 자동 업데이트와 winget (배포, 중간)
+- Meltype은 업데이트 확인(유일한 기본 네트워크)과 조용한 설치, winget 등록을 한다.
+- 우리는 "네트워크 없음"을 장점으로 내세우므로, 하더라도 기본 끔 + 확인만(GitHub Releases 최신 판 비교) → 사용자가 누르면 받기. winget 등록은 서명(진행 중)이 끝난 뒤. 코드 서명 문서는 Meltype의 `CODE-SIGNING.md`(서명 대상을 자기 바이너리로 한정, 승인자 지정)를 참고할 만하다.
+
+### 제안 10. 설정 파일 스키마 (설정, 작음)
+- Meltype은 `config.schema.json`에 항목마다 설명을 넣어 설정 창과 직접 편집 모두를 돕는다.
+- 제안: 우리 `settings.json`도 항목이 늘기 전에 스키마(`$schema`)를 두면 설정 창 없이 고치는 사람이 틀리지 않는다. 지금 항목이 적어 급하지 않다.
+
+### 그 밖 (낮은 우선순위, 참고만)
+- 예측 후보·입력 중 후보 미리보기: 한국어에는 효과가 작고 일본어에선 Mozc 예측으로 가능. 후보창 공간과 Shift 탭 흐름에 영향이 커서 나중에.
+- 로마자 오타 고침(`sumimasne` → すみません): 일본어 구간에서만 의미. 판정기와 엮이므로 B 품질 작업 때 검토.
+- Zenzai: `next-tasks.md` D15 그대로 (품질 차이가 클 때만, 기본 끔). Meltype이 기본 켬으로 쓰고 있으니 품질 비교 대상으로 좋다.
+- ARM64 TIP: 사용자가 생기면.
+- 영어·숫자 앞뒤 자동 띄어쓰기, 계산기·시각·클립보드 후보, 정형문: 재미있지만 핵심과 거리가 멀다.
+- 관리자 앱에서 자동 꺼짐: Meltype은 끈다. 우리는 동작하도록 확인했다(`next-tasks.md` 13). 굳이 끌 이유는 없다.
+
+## 5. 함께 설치할 때 주의
+- 두 IME는 서로 다른 TIP라 TSF에서는 동시에 하나만 활성이다. 충돌은 Meltype이 **키보드 모드**(전역 훅)로 돌 때 생길 수 있다: 입력 언어와 상관없이(`JapaneseKeyboardOnly = false`) 키를 가로채고 Windows IME를 끈다. 우리 IME를 시험할 때는 Meltype 트레이에서 일시 정지(Ctrl+Alt+F12)하거나 Meltype을 끄고 하는 것이 안전하다.
+- Meltype도 Mozc 도우미를 띄우지만 파이프·프로필 폴더가 달라 우리 `mozc_stdio.exe`와 섞이지 않는다.
