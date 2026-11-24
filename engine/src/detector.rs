@@ -111,8 +111,13 @@ pub struct History {
 
 impl History {
     pub fn record(&mut self, keys: &str, form: &Form) {
-        *self.exact.entry(keys.to_string()).or_default().entry(form.clone()).or_default() += 1;
-        *self.folded.entry(keys.to_lowercase()).or_default().entry(form.clone()).or_default() += 1;
+        self.record_n(keys, form, 1);
+    }
+
+    /// n번 고른 것으로 기록한다 (후보창에서 직접 고른 확정은 그냥 확정보다 무겁게).
+    pub fn record_n(&mut self, keys: &str, form: &Form, n: u32) {
+        *self.exact.entry(keys.to_string()).or_default().entry(form.clone()).or_default() += n;
+        *self.folded.entry(keys.to_lowercase()).or_default().entry(form.clone()).or_default() += n;
     }
 
     pub fn count(&self, keys: &str, form: &Form) -> f64 {

@@ -115,6 +115,9 @@ fn to_halfwidth_katakana(s: &str) -> String {
 
 /// 사용자 사전 후보의 표시·묶음 이름
 const DICT: &str = "사전";
+/// 후보창에서 직접 고른 확정은 판정 학습에 이만큼 친 것으로 남긴다 (그냥 확정은 1).
+/// 보너스는 history × ln(1+횟수)라 1번 → +2.8, 3번 → +5.5 (history 4.0 기준).
+const PICK_WEIGHT: u32 = 3;
 const VK_TAB: u16 = 0x09;
 
 const VK_BACK: u16 = 0x08;
@@ -1507,6 +1510,7 @@ impl<'m> Session<'m> {
 
     fn commit(&mut self, tail: &str) -> Response {
         let mut text;
+        let deliberate;
         let mut segs: Vec<PreeditSegment> = Vec::new();
         if let Some(ps) = self.parts.take() {
             // 부분 변환: 부분마다 고른 후보를 이어 붙이고, 일본어 부분은 Mozc로 학습시킨다
@@ -1547,7 +1551,11 @@ impl<'m> Session<'m> {
         } else if self.raw {
             text = self.keys.clone();
             segs.push(seg(&text, "raw"));
-        } else if let Some((c, _, _)) = self.current() {
+        } else if let Some((c, _, _)) = {
+            // 후보창에서 고른 확정인가 (current()보다 먼저: 열린 창·고른 후보 상태를 본다)
+            deliberate = self.open.is_some() || self.pinned.is_some();
+            self.current()
+        } {
             // 일본어 구간은 Mozc로 확정 (학습). 전각 후보는 그대로.
             text = String::new();
             for (i, (s, shown)) in c.cand.segments.iter().zip(c.texts.iter()).enumerate() {
@@ -1568,10 +1576,11 @@ impl<'m> Session<'m> {
             if c.label == HANJA && self.learn {
                 crate::hanja::learn(&c.cand.segments[0].text, &text);
             }
-            // 학습: 확정한 형태를 기록하고 저장한다 (사전 후보는 판정 학습에 넣지 않는다)
+            // 학습: 확정한 형태를 기록하고 저장한다 (사전 후보는 판정 학습에 넣지 않는다).
+            // 후보창에서 직접 고른 것은 PICK_WEIGHT번 친 것으로: 한 번 고치면 바로 반영되게.
             if c.label == DICT || !self.learn {
             } else if let Ok(mut h) = self.history.lock() {
-                h.record(&self.keys, &c.cand.form);
+                h.record_n(&self.keys, &c.cand.form, if deliberate { PICK_WEIGHT } else { 1 });
                 if let Some(p) = &self.history_path {
                     let _ = h.save(p);
                 }
@@ -1646,6 +1655,30 @@ mod tests {
         s.reset();
         crate::lock::set(None);
         s.apply_settings(&st);
+    }
+
+    #[test]
+    fn deliberate_pick_learns_more() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(m) = models() else { return };
+        let hist = Arc::new(Mutex::new(History::default()));
+        let mut s = Session::new(&m, hist.clone(), None, None);
+        // 그냥 확정: 1번
+        type_keys(&mut s, "dkssud");
+        let auto = s.det.decide("dkssud", s.prev).tokens[0].chosen.form.clone();
+        s.key(&key(VK_RETURN, false));
+        assert_eq!(hist.lock().unwrap().count("dkssud", &auto), 1.0);
+        // 후보창에서 다른 형태를 골라 확정: PICK_WEIGHT번
+        type_keys(&mut s, "dkssud");
+        s.shift_tap();
+        let (list, sel) = s.open.as_mut().expect("window");
+        let i = list.iter().position(|c| c.label != DICT && c.cand.form != auto).expect("other form");
+        *sel = i;
+        let picked = list[i].cand.form.clone();
+        s.key(&key(VK_RETURN, false));
+        let h = hist.lock().unwrap();
+        assert_eq!(h.count("dkssud", &picked), PICK_WEIGHT as f64);
+        assert_eq!(h.count("dkssud", &auto), 1.0);
     }
 
     #[test]
