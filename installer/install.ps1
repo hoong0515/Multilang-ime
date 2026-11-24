@@ -20,6 +20,53 @@ $Profiles = @{
     en = @("0409", "{681B9E1A-408F-4AF6-8EB3-AF2C9283A82F}", "en-US")
 }
 
+function Get-DisabledTsfProfiles {
+    # per-user input method profiles the user turned off: HKCU\...\CTF\TIP\{clsid}\LanguageProfile\0x0000xxxx\{profile} Enable=0
+    $root = "HKCU:\Software\Microsoft\CTF\TIP"
+    if (-not (Test-Path $root)) { return }
+    Get-ChildItem $root -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like "{*}" -and $_.PSParentPath -like "*LanguageProfile\0x*" } | ForEach-Object {
+        $v = (Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue).Enable
+        if ($null -ne $v -and $v -eq 0) {
+            $parts = $_.Name.Split("\")
+            [pscustomobject]@{ Clsid = $parts[-4]; LangId = [Convert]::ToUInt16($parts[-2].Substring(2), 16); Profile = $parts[-1] }
+        }
+    }
+}
+
+function Set-TsfProfileEnabled($clsid, [uint16]$langId, $profileGuid, [bool]$on) {
+    # through TSF (ITfInputProcessorProfiles) so the running input service picks it up now, not only at the next sign-in
+    if (-not ("MultilangIME.TsfProfiles" -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace MultilangIME {
+[ComImport, Guid("1F02B6C5-7842-4EE6-8A0B-9A24183A95CA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface ITfInputProcessorProfiles {
+    void Register(); void Unregister(); void AddLanguageProfile(); void RemoveLanguageProfile();
+    void EnumInputProcessorInfo(); void GetDefaultLanguageProfile(); void SetDefaultLanguageProfile();
+    void ActivateLanguageProfile(); void GetActiveLanguageProfile(); void GetLanguageProfileDescription();
+    void GetCurrentLanguage(); void ChangeCurrentLanguage(); void GetLanguageList(); void EnumLanguageProfiles();
+    [PreserveSig] int EnableLanguageProfile(ref Guid rclsid, ushort langid, ref Guid guidProfile, int fEnable);
+}
+public static class TsfProfiles {
+    public static int Enable(string clsid, ushort lang, string prof, bool on) {
+        var p = (ITfInputProcessorProfiles)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("33C53A50-F456-4884-B049-85FD643ECFED")));
+        Guid c = new Guid(clsid), g = new Guid(prof);
+        try { return p.EnableLanguageProfile(ref c, lang, ref g, on ? 1 : 0); } finally { Marshal.ReleaseComObject(p); }
+    }
+}
+}
+"@
+    }
+    $hr = [MultilangIME.TsfProfiles]::Enable($clsid, $langId, $profileGuid, $on)
+    if ($hr -ne 0) {
+        # fall back to the registry value (takes effect at the next sign-in)
+        $key = "HKCU:\Software\Microsoft\CTF\TIP\$clsid\LanguageProfile\0x" + $langId.ToString("X8") + "\$profileGuid"
+        if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+        New-ItemProperty -LiteralPath $key -Name Enable -PropertyType DWord -Value ([int]$on) -Force | Out-Null
+    }
+}
+
 function Step($msg, [scriptblock]$do) {
     Write-Host "- $msg"
     if (-not $DryRun) { & $do }
@@ -134,14 +181,24 @@ if ($perUser -and -not $NoLanguageList) {
         $tip = "$($p[0]):$Clsid$($p[1])"
         $prefix = $p[2].Split("-")[0]
         $list = Get-WinUserLanguageList
+        $changed = $false
         # ours only under the chosen language
         foreach ($l in $list) {
-            foreach ($t in @($l.InputMethodTips | Where-Object { $_ -like "*$Clsid*" -and $_ -ne $tip })) { [void]$l.InputMethodTips.Remove($t) }
+            foreach ($t in @($l.InputMethodTips | Where-Object { $_ -like "*$Clsid*" -and $_ -ne $tip })) { [void]$l.InputMethodTips.Remove($t); $changed = $true }
         }
         $lang = $list | Where-Object { $_.LanguageTag -eq $prefix -or $_.LanguageTag -like "$prefix-*" } | Select-Object -First 1
-        if (-not $lang) { $list.Add($p[2]); $lang = $list | Where-Object { $_.LanguageTag -like "$prefix*" } | Select-Object -First 1 }
-        if (-not ($lang.InputMethodTips -contains $tip)) { $lang.InputMethodTips.Add($tip) }
-        Set-WinUserLanguageList $list -Force
+        if (-not $lang) { $list.Add($p[2]); $lang = $list | Where-Object { $_.LanguageTag -like "$prefix*" } | Select-Object -First 1; $changed = $true }
+        if (-not ($lang.InputMethodTips -contains $tip)) { $lang.InputMethodTips.Add($tip); $changed = $true }
+        if (-not $changed) {
+            Write-Host "  already in the list: language list left as it is"
+        } else {
+            # Saving the language list turns every listed input method back on (per-user Enable=1).
+            # Keep the ones the user turned off: note them first, then turn them off again.
+            $off = @(Get-DisabledTsfProfiles | Where-Object { $_.Clsid -ne $Clsid })
+            Set-WinUserLanguageList $list -Force
+            foreach ($o in $off) { Set-TsfProfileEnabled $o.Clsid $o.LangId $o.Profile $false }
+            if ($off.Count) { Write-Host "  kept $($off.Count) other input method(s) turned off" }
+        }
     }
 }
 
