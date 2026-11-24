@@ -1,4 +1,4 @@
-# 백엔드를 사용자 로그온 때 시작하는 작업 스케줄러 작업을 등록·해제한다 (관리자 권한 불필요).
+﻿# 백엔드를 사용자 로그온 때 시작하는 작업 스케줄러 작업을 등록·해제한다 (관리자 권한 불필요).
 #
 #   powershell -ExecutionPolicy Bypass -File tools\backend-task.ps1 install   # 등록 후 바로 실행
 #   powershell -ExecutionPolicy Bypass -File tools\backend-task.ps1 uninstall # 해제 (실행 중인 백엔드도 종료)

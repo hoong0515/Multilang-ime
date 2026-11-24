@@ -1,4 +1,4 @@
-# File handling shared by install.ps1 and uninstall.ps1 (dot-sourced). Tested by tests\installer-files.ps1.
+﻿# File handling shared by install.ps1 and uninstall.ps1 (dot-sourced). Tested by tests\installer-files.ps1.
 #
 # Safety rules:
 # - The install folder must be a folder of our own: new, empty, or an earlier Multilang IME install

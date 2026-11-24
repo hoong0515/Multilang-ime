@@ -1,4 +1,4 @@
-# Optional, off by default: let the candidate window show above the taskbar search box on THIS PC by
+﻿# Optional, off by default: let the candidate window show above the taskbar search box on THIS PC by
 # signing MultilangIME-CandWin.exe with a certificate made for this PC only.
 #
 # Releases are unsigned. Windows starts the candidate window helper with UIAccess (needed to draw above the
