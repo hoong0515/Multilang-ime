@@ -69,7 +69,7 @@ korean.LangJa=日本語
 korean.LangEn=English
 korean.Updating=설치된 버전 %1을(를) 이 버전으로 바꿉니다. 설정과 학습 기록은 그대로 남습니다.
 korean.Running=Multilang IME 설치 스크립트를 실행하는 중...
-korean.Failed=설치하지 못했습니다 (코드 %1).%n%n%2
+korean.Failed=설치하지 못했습니다 (코드 %1).%n%n%2%n전체 기록: %3
 korean.Done=Multilang IME를 설치했습니다.%n%n이미 열려 있던 프로그램은 다시 열어야 새 입력기가 적용됩니다. 제거는 설정 > 앱에서 할 수 있습니다.%n%n작업 표시줄 검색창: 이 판은 서명이 없어 검색창에서는 후보창이 가려집니다(입력은 됨). 설치 폴더의 local-signing.ps1로 이 PC 전용 인증서를 만들어 켤 수 있지만, 이 PC가 신뢰하는 루트 인증서를 추가하는 일이라 보안상 위험이 있습니다. 필요할 때만, 설치 폴더 README의 안내를 읽고 쓰세요.
 english.LangPageTitle=Input language
 english.LangPageSub=Choose the language under which Multilang IME is added to your input methods.
@@ -79,7 +79,7 @@ english.LangJa=Japanese
 english.LangEn=English
 english.Updating=Installed version %1 will be replaced by this version. Settings and learning data are kept.
 english.Running=Running the Multilang IME install script...
-english.Failed=Setup failed (code %1).%n%n%2
+english.Failed=Setup failed (code %1).%n%n%2%nFull log: %3
 english.Done=Multilang IME is installed.%n%nPrograms that were already open need a restart to use the new IME. Remove it from Settings > Apps.%n%nTaskbar search box: this release is unsigned, so the candidate window stays hidden there (typing works). local-signing.ps1 in the install folder can enable it with a certificate made for this PC only, but that adds a trusted root certificate to this PC, which is a security risk. Use it only if you need it, after reading the README in the install folder.
 japanese.LangPageTitle=入力言語
 japanese.LangPageSub=Multilang IME をどの言語の入力方式として登録するか選んでください。
@@ -89,7 +89,7 @@ japanese.LangJa=日本語 (日本語キーボード向け)
 japanese.LangEn=英語
 japanese.Updating=インストール済みのバージョン %1 をこのバージョンに置き換えます。設定と学習データはそのまま残ります。
 japanese.Running=Multilang IME のインストールスクリプトを実行しています...
-japanese.Failed=インストールできませんでした (コード %1)。%n%n%2
+japanese.Failed=インストールできませんでした (コード %1)。%n%n%2%n全体のログ: %3
 japanese.Done=Multilang IME をインストールしました。%n%n開いていたプログラムは再起動すると新しい IME が使えます。削除は「設定 > アプリ」から行えます。%n%nタスクバーの検索ボックス: このバージョンは署名されていないため、検索ボックスでは候補ウィンドウが隠れます (入力はできます)。インストールフォルダーの local-signing.ps1 でこの PC 専用の証明書を作って有効にできますが、この PC が信頼するルート証明書を追加するため、セキュリティ上のリスクがあります。必要なときだけ、インストールフォルダーの README を読んでから使ってください。
 
 [Messages]
@@ -165,7 +165,7 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  Script, Log, Params: String;
+  Script, Log, Kept, Params: String;
   Code: Integer;
 begin
   if CurStep <> ssPostInstall then Exit;
@@ -177,8 +177,13 @@ begin
   WizardForm.StatusLabel.Caption := CustomMessage('Running');
   InstallOk := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, ExpandConstant('{tmp}\pkg'),
     SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
+  // {tmp} is deleted when setup ends: keep a copy of the script log (success or not) where the user can find it
+  Kept := ExpandConstant('{localappdata}\multilang-ime\setup-install.log');
+  ForceDirectories(ExtractFileDir(Kept));
+  if not FileExists(Log) then SaveStringToFile(Log, 'install.ps1 left no log (exit code ' + IntToStr(Code) + ')' + #13#10, False);
+  if not FileCopy(Log, Kept, False) then Kept := Log;
   if not InstallOk then
-    SuppressibleMsgBox(FmtMessage(CustomMessage('Failed'), [IntToStr(Code), LastLines(Log, 15)]), mbError, MB_OK, IDOK);
+    SuppressibleMsgBox(FmtMessage(CustomMessage('Failed'), [IntToStr(Code), LastLines(Log, 15), Kept]), mbError, MB_OK, IDOK);
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
