@@ -137,7 +137,8 @@ fn handle_client(h: PipeHandle, models: &'static Models, history: SharedHistory,
                 log(&format!("clear_learning denied (client {identity:?}, app {:?})", session.app));
                 Response { error: Some("denied".into()), ..Default::default() }
             }
-            Ok(Request::Status) => Response::default(),
+            // 입력칸에 들어갈 때 알림을 보일지 (꺼진 프로그램에서는 보이지 않는다)
+            Ok(Request::Status) => Response { focus_notice: settings.focus_notice && !off, ..Default::default() },
             Ok(Request::Flush) => session.flush(),
             Ok(Request::Reset) => session.reset(),
             Ok(Request::ShiftTap) => session.shift_tap(),

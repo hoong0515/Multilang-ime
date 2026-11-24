@@ -131,6 +131,9 @@ pub struct Response {
     /// 입력 표시기 (백엔드가 응답마다 채운다).
     #[serde(default)]
     pub indicator: Option<Indicator>,
+    /// Status: 입력칸에 들어갈 때 고정 상태 알림을 보일지 (설정 `focus_notice`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub focus_notice: bool,
     /// 요청을 거부했을 때의 이유 (예: 샌드박스 앱이 보낸 관리 명령). 보통은 없다.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

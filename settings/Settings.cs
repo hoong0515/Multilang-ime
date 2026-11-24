@@ -50,6 +50,7 @@ class SettingsForm : Form
     readonly CheckBox en = new CheckBox { Text = "English (항상 사용)", AutoSize = true, Checked = true, Enabled = false };
     readonly RadioButton spaceCommit = new RadioButton { Text = "확정 + 전각 공백 (기본)", AutoSize = true };
     readonly RadioButton spaceContinue = new RadioButton { Text = "확정하지 않고 이어서 변환", AutoSize = true };
+    readonly CheckBox focusNotice = new CheckBox { Text = "언어를 고정해 쓸 때, 입력칸에 들어가면 고정 상태를 잠깐 보이기", AutoSize = true };
     readonly ListBox apps = new ListBox { Height = 110, IntegralHeight = false };
     readonly TextBox appName = new TextBox();
     readonly ListView dict = new ListView { View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false, Size = new Size(420, 330) };
@@ -84,6 +85,7 @@ class SettingsForm : Form
 
         root.Controls.Add(Group("사용할 언어 (자동 판정·후보)", Flow(en, ko, ja)));
         root.Controls.Add(Group("일본어 문맥에서 Space", Flow(spaceCommit, spaceContinue)));
+        root.Controls.Add(Group("알림", Flow(focusNotice)));
 
         var add = new Button { Text = "추가", AutoSize = true };
         var browse = new Button { Text = "찾아보기…", AutoSize = true };
@@ -237,6 +239,7 @@ class SettingsForm : Form
         var space = Get(data, "ja_space") as string;
         spaceContinue.Checked = space == "continue";
         spaceCommit.Checked = !spaceContinue.Checked;
+        focusNotice.Checked = !(Get(data, "focus_notice") is bool && !(bool)Get(data, "focus_notice"));
         var list = Get(data, "disabled_apps") as IEnumerable;
         if (list != null)
             foreach (var o in list)
@@ -255,6 +258,7 @@ class SettingsForm : Form
         // 모르는 항목은 그대로 둔다
         data["languages"] = new Dictionary<string, object> { { "ko", ko.Checked }, { "ja", ja.Checked } };
         data["ja_space"] = spaceContinue.Checked ? "continue" : "commit";
+        data["focus_notice"] = focusNotice.Checked;
         var list = new List<string>();
         foreach (var o in apps.Items) list.Add((string)o);
         data["disabled_apps"] = list;

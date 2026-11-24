@@ -50,12 +50,13 @@ install.cmd -Language en    (English)
 - **일본어 문맥에서 Space**: 확정 + 전각 공백(기본) / 확정하지 않고 이어서 변환.
 - **자동 꺼짐 프로그램**: 실행 파일 이름(예: `game.exe`)을 넣으면 그 프로그램에서는 IME가 키를 받지 않습니다.
 - **사용자 사전** 탭: 치는 키와 변환을 등록합니다 (예: `yrsk` → よろしくお願いします). 후보창 맨 앞 "사전" 묶음에 나오고 첫 Shift 탭이 고릅니다.
+- **알림**: 언어를 고정해 쓸 때 입력칸에 들어가면 고정 상태를 커서 옆에 잠깐 보입니다 (기본 켬).
 - **학습 기록 지우기**: 언어 판정·한자 선택·일본어 변환(Mozc) 학습을 모두 지웁니다.
 
 설정 파일은 `%LOCALAPPDATA%\multilang-ime\settings.json`입니다:
 
 ```json
-{ "ja_space": "commit", "languages": { "ko": true, "ja": true }, "disabled_apps": ["game.exe"] }
+{ "ja_space": "commit", "languages": { "ko": true, "ja": true }, "disabled_apps": ["game.exe"], "focus_notice": true }
 ```
 
 ## 알아 둘 점

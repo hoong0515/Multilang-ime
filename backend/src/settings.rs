@@ -6,6 +6,7 @@
 //! ```
 //! - `languages`: 자동 판정·후보에 넣을 언어 (영어는 늘 켜짐).
 //! - `disabled_apps`: IME를 쓰지 않을 프로그램 실행 파일 이름 (대소문자 무시, `.exe` 생략 가능).
+//! - `focus_notice`: 언어를 고정해 쓸 때 입력칸에 들어가면 고정 상태를 커서 옆에 잠깐 보인다 (기본 켬).
 //! - `ja_space`: 일본어 문맥의 Space.
 //!   - `"commit"` (기본): 확정 + 전각 공백(U+3000)
 //!   - `"continue"`: 확정하지 않고 조합을 이어 간다 (문장을 한 번에 변환). 확정은 구두점·Enter·Shift+Space.
@@ -37,12 +38,19 @@ impl Default for Languages {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub ja_space: JaSpace,
     pub languages: Languages,
     pub disabled_apps: Vec<String>,
+    pub focus_notice: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { ja_space: JaSpace::default(), languages: Languages::default(), disabled_apps: Vec::new(), focus_notice: true }
+    }
 }
 
 impl Settings {
@@ -101,4 +109,18 @@ pub fn current() -> Settings {
         }
     }
     c.settings.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn focus_notice_defaults_on() {
+        // 예전 설정 파일(항목 없음)도 켜짐으로 읽는다
+        let s: Settings = serde_json::from_str(r#"{ "ja_space": "commit" }"#).unwrap();
+        assert!(s.focus_notice);
+        let s: Settings = serde_json::from_str(r#"{ "focus_notice": false }"#).unwrap();
+        assert!(!s.focus_notice);
+    }
 }

@@ -200,7 +200,7 @@ struct State {
     floating: Option<(String, usize)>,
 }
 
-#[implement(ITfTextInputProcessorEx, ITfTextInputProcessor, ITfKeyEventSink, ITfCompositionSink, ITfDisplayAttributeProvider)]
+#[implement(ITfTextInputProcessorEx, ITfTextInputProcessor, ITfKeyEventSink, ITfCompositionSink, ITfDisplayAttributeProvider, ITfThreadMgrEventSink)]
 struct TextService {
     state: Rc<RefCell<State>>,
     backend: RefCell<Client>,
@@ -221,6 +221,10 @@ struct TextService {
     /// 작업 표시줄 입력 표시기의 입력 모드 단추 (우리 아이콘)
     langbar: RefCell<Option<ITfLangBarItem>>,
     indicator: Rc<RefCell<langbar::Shared>>,
+    /// 입력칸(문서) 포커스 알림 구독 (ITfThreadMgrEventSink) 쿠키
+    tm_sink_cookie: Cell<Option<u32>>,
+    /// 마지막으로 입력칸 진입 알림을 보인 시각 (연달아 보이지 않게)
+    last_focus_notice: Cell<Option<Instant>>,
 }
 
 impl TextService {
@@ -239,6 +243,8 @@ impl TextService {
             ui_own: Cell::new(true),
             langbar: RefCell::new(None),
             indicator: Rc::new(RefCell::new(langbar::Shared::default())),
+            tm_sink_cookie: Cell::new(None),
+            last_focus_notice: Cell::new(None),
         }
     }
 }
@@ -536,18 +542,7 @@ impl TextService_Impl {
     /// 한/영 키 뒤: 바뀐 입력 언어 고정 상태를 커서 아래에 잠깐 보인다.
     fn toast_lock(&self, ctx: &ITfContext, r: &Response) {
         let Some(ind) = &r.indicator else { return };
-        let name = match ind.lang.as_str() {
-            "en" => "English",
-            "ja" => "日本語",
-            _ => "한국어",
-        };
-        let text = if !ind.locked {
-            "자동 전환".to_string()
-        } else if ind.lang == "en" {
-            "English 고정 (IME 끔)".to_string()
-        } else {
-            format!("{name} 고정")
-        };
+        let (text, badge) = lock_label(ind);
         let Ok(client_id) = self.state.try_borrow().map(|s| s.client_id) else { return };
         let out = Rc::new(Cell::new(None));
         let session: ITfEditSession = CaretSession { context: ctx.clone(), out: out.clone() }.into();
@@ -560,16 +555,62 @@ impl TextService_Impl {
             }
             RECT { left: p.x, top: p.y, right: p.x + 1, bottom: p.y + 16 }
         });
-        let badge = match ind.lang.as_str() {
-            "en" => "A",
-            "ja" => "あ",
-            _ => "가",
-        };
         candwin::show_toast(&text, badge, anchor);
+    }
+
+    /// 입력칸에 들어왔을 때: 언어를 고정해 쓰는 중이면 그 상태를 커서 옆에 잠깐 보인다 (설정 `focus_notice`).
+    /// 자동 전환일 때, 꺼진 칸·프로그램, 조합 중에는 보이지 않는다. 커서 위치를 모르면 보이지 않는다.
+    fn focus_notice(&self, ctx: &ITfContext) {
+        if self.composing() || self.quick_off(ctx) {
+            let _ = self.call(&Request::Status);
+            return;
+        }
+        let Some(r) = self.call(&Request::Status) else { return };
+        if self.last_focus_notice.get().is_some_and(|t| t.elapsed() < FOCUS_NOTICE_GAP) {
+            return;
+        }
+        let Some(ind) = r.indicator.as_ref().filter(|i| i.locked && r.focus_notice) else { return };
+        let (text, badge) = lock_label(ind);
+        let Ok(client_id) = self.state.try_borrow().map(|s| s.client_id) else { return };
+        self.last_focus_notice.set(Some(Instant::now()));
+        // 포커스 알림 안에서는 동기 편집 세션이 안 될 수 있다: 비동기로 요청하고 세션 안에서 보인다
+        let session: ITfEditSession = FocusToastSession { context: ctx.clone(), text, badge }.into();
+        let _ = unsafe { ctx.RequestEditSession(client_id, &session, TF_ES_ASYNCDONTCARE | TF_ES_READ) };
+    }
+
+    /// 스레드가 지금 포커스를 둔 입력칸 문맥.
+    fn focused_context(&self) -> Option<ITfContext> {
+        let tm = self.state.try_borrow().ok()?.thread_mgr.clone()?;
+        let dim = unsafe { tm.GetFocus() }.ok()?;
+        unsafe { dim.GetTop() }.ok()
     }
 
     /// 지금 입력칸에서 IME를 꺼야 하는가: 앱이 키보드를 꺼 둔 문맥, 빈 문맥, 또는 비밀번호·숫자 등 용도의 칸.
     fn input_off(&self, context: &ITfContext) -> bool {
+        if self.quick_off(context) {
+            return true;
+        }
+        let Ok(client_id) = self.state.try_borrow().map(|s| s.client_id) else { return false };
+        let out = Rc::new(Cell::new(None));
+        let session: ITfEditSession = ScopeSession { context: context.clone(), out: out.clone() }.into();
+        match unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READ) } {
+            Ok(hr) if hr.is_err() => debug_note(&format!("scope session hr {hr:?}")),
+            Err(e) => {
+                debug_note(&format!("scope session failed {e:?}"));
+                return false;
+            }
+            _ => {}
+        }
+        let scopes = out.take().unwrap_or_default();
+        let off = scopes_off(&scopes);
+        if off || !scopes.is_empty() {
+            debug_note(&format!("input scopes {scopes:?} -> off={off}"));
+        }
+        off
+    }
+
+    /// 편집 세션 없이 알 수 있는 꺼짐: 앱이 키보드를 꺼 둔 문맥, 빈 문맥, 옛 입력칸의 비밀번호·숫자 스타일.
+    fn quick_off(&self, context: &ITfContext) -> bool {
         if compartment_on(context, &GUID_COMPARTMENT_KEYBOARD_DISABLED) || compartment_on(context, &GUID_COMPARTMENT_EMPTYCONTEXT) {
             debug_note("input off: disabled/empty context");
             return true;
@@ -590,23 +631,7 @@ impl TextService_Impl {
                 }
             }
         }
-        let Ok(client_id) = self.state.try_borrow().map(|s| s.client_id) else { return false };
-        let out = Rc::new(Cell::new(None));
-        let session: ITfEditSession = ScopeSession { context: context.clone(), out: out.clone() }.into();
-        match unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READ) } {
-            Ok(hr) if hr.is_err() => debug_note(&format!("scope session hr {hr:?}")),
-            Err(e) => {
-                debug_note(&format!("scope session failed {e:?}"));
-                return false;
-            }
-            _ => {}
-        }
-        let scopes = out.take().unwrap_or_default();
-        let off = scopes_off(&scopes);
-        if off || !scopes.is_empty() {
-            debug_note(&format!("input scopes {scopes:?} -> off={off}"));
-        }
-        off
+        false
     }
 
     fn composing(&self) -> bool {
@@ -680,6 +705,9 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             if let (Ok(lbm), Some(item)) = (tm.cast::<ITfLangBarItemMgr>(), self.langbar.borrow_mut().take()) {
                 let _ = unsafe { lbm.RemoveItem(&item) };
             }
+            if let (Ok(src), Some(cookie)) = (tm.cast::<ITfSource>(), self.tm_sink_cookie.take()) {
+                let _ = unsafe { src.UnadviseSink(cookie) };
+            }
         }
         Ok(())
     }
@@ -706,9 +734,45 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
             }
         }
         let _ = self.call(&Request::Status); // 입력 표시기 첫 상태
+        // 입력칸(문서) 포커스가 바뀌는 것을 받는다 (입력칸 진입 알림)
+        if let Ok(src) = tm.cast::<ITfSource>() {
+            let sink: ITfThreadMgrEventSink = self.to_interface();
+            match unsafe { src.AdviseSink(&ITfThreadMgrEventSink::IID, &sink) } {
+                Ok(cookie) => self.tm_sink_cookie.set(Some(cookie)),
+                Err(e) => debug_note(&format!("thread mgr sink advise failed {e:?}")),
+            }
+        }
         let km: ITfKeystrokeMgr = tm.cast()?;
         let sink: ITfKeyEventSink = self.to_interface();
         unsafe { km.AdviseKeyEventSink(tid, &sink, true) }
+    }
+}
+
+impl ITfThreadMgrEventSink_Impl for TextService_Impl {
+    fn OnInitDocumentMgr(&self, _pdim: Ref<ITfDocumentMgr>) -> Result<()> {
+        Ok(())
+    }
+
+    fn OnUninitDocumentMgr(&self, _pdim: Ref<ITfDocumentMgr>) -> Result<()> {
+        Ok(())
+    }
+
+    /// 같은 앱 안에서 다른 입력칸으로 옮겼다: 고정 중이면 알린다.
+    fn OnSetFocus(&self, pdimfocus: Ref<ITfDocumentMgr>, _pdimprevfocus: Ref<ITfDocumentMgr>) -> Result<()> {
+        if let Ok(dim) = pdimfocus.ok() {
+            if let Ok(ctx) = unsafe { dim.GetTop() } {
+                self.focus_notice(&ctx);
+            }
+        }
+        Ok(())
+    }
+
+    fn OnPushContext(&self, _pic: Ref<ITfContext>) -> Result<()> {
+        Ok(())
+    }
+
+    fn OnPopContext(&self, _pic: Ref<ITfContext>) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -717,8 +781,13 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         if !fforeground.as_bool() {
             candwin::hide();
         } else {
-            // 다른 앱에서 한/영 키로 고정을 바꿨을 수 있다: 입력 표시기만 맞춘다
-            let _ = self.call(&Request::Status);
+            // 다른 앱에서 한/영 키로 고정을 바꿨을 수 있다: 입력 표시기를 맞추고, 고정 중이면 알린다
+            match self.focused_context() {
+                Some(ctx) => self.focus_notice(&ctx),
+                None => {
+                    let _ = self.call(&Request::Status);
+                }
+            }
             if juce::is_juce_class(&focus_class()) {
                 juce::ensure_hook();
             }
@@ -1309,6 +1378,72 @@ impl ITfEditSession_Impl for CaretSession_Impl {
         Ok(())
     }
 }
+
+/// 입력칸 진입 알림: 커서 자리의 용도를 보고(비밀번호 등이면 그만둔다) 커서 옆에 고정 상태를 보인다.
+#[implement(ITfEditSession)]
+struct FocusToastSession {
+    context: ITfContext,
+    text: String,
+    badge: &'static str,
+}
+
+impl ITfEditSession_Impl for FocusToastSession_Impl {
+    fn DoEditSession(&self, ec: u32) -> Result<()> {
+        let scopes = Rc::new(Cell::new(None));
+        let read: ITfEditSession = ScopeSession { context: self.context.clone(), out: scopes.clone() }.into();
+        let _ = unsafe { read.DoEditSession(ec) };
+        if scopes_off(&scopes.take().unwrap_or_default()) {
+            return Ok(());
+        }
+        let caret = Rc::new(Cell::new(None));
+        let read: ITfEditSession = CaretSession { context: self.context.clone(), out: caret.clone() }.into();
+        let _ = unsafe { read.DoEditSession(ec) };
+        // 배치가 아직 없으면(빈 사각형) 시스템 커서로, 그것도 없으면 보이지 않는다
+        let anchor = caret.take().filter(|rc: &RECT| rc.bottom > rc.top && (rc.left != 0 || rc.top != 0)).or_else(system_caret);
+        if let Some(anchor) = anchor {
+            candwin::show_toast(&self.text, self.badge, anchor);
+        }
+        Ok(())
+    }
+}
+
+/// 시스템 커서(캐럿) 위치 (화면 좌표). 없으면 None.
+fn system_caret() -> Option<RECT> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
+    unsafe {
+        let mut gti = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
+        if GetGUIThreadInfo(0, &mut gti).is_err() || gti.hwndCaret.0.is_null() {
+            return None;
+        }
+        let mut p = POINT { x: gti.rcCaret.left, y: gti.rcCaret.top };
+        if !ClientToScreen(gti.hwndCaret, &mut p).as_bool() {
+            return None;
+        }
+        let h = (gti.rcCaret.bottom - gti.rcCaret.top).max(16);
+        Some(RECT { left: p.x, top: p.y, right: p.x + 1, bottom: p.y + h })
+    }
+}
+
+/// 고정 상태 알림 문구와 언어 배지.
+fn lock_label(ind: &ipc::Indicator) -> (String, &'static str) {
+    let text = match (ind.locked, ind.lang.as_str()) {
+        (false, _) => "자동 전환",
+        (true, "en") => "English 고정 (IME 끔)",
+        (true, "ja") => "日本語 고정",
+        (true, _) => "한국어 고정",
+    };
+    let badge = match ind.lang.as_str() {
+        "en" => "A",
+        "ja" => "あ",
+        _ => "가",
+    };
+    (text.to_string(), badge)
+}
+
+/// 입력칸 진입 알림 사이의 최소 간격 (앱 전환과 입력칸 포커스가 함께 올 때 한 번만).
+const FOCUS_NOTICE_GAP: Duration = Duration::from_millis(1000);
 
 /// 커서 자리의 입력칸 용도(InputScope)를 읽는 읽기 전용 편집 세션.
 #[implement(ITfEditSession)]
