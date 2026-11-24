@@ -61,6 +61,12 @@ Step "stop old backend" {
         Stop-Process -Force
 }
 
+# 1b. A local signing certificate (local-signing.ps1 -Enable) belongs to the copy being replaced: remove it.
+#     The new MultilangIME-CandWin.exe is unsigned; run local-signing.ps1 -Enable again if you want it.
+Step "remove local signing certificate, if any" {
+    & (Join-Path $Src "local-signing.ps1") -Disable -Quiet
+}
+
 # 2. Copy files; writes the manifest. The TIP implementation goes to a new impl\<hash>\ folder and the
 #    stub is skipped when unchanged, so apps using the old version keep it; an old file still loaded is
 #    renamed and deleted at the next reboot.
@@ -162,3 +168,6 @@ Write-Host ""
 Write-Host "Installed to $Dest. Apps that were already running need a restart to use the IME."
 if ($script:booked.Count -gt 0) { Write-Host "$($script:booked.Count) old file(s) still in use will be deleted at the next reboot." }
 Write-Host "Tip: for Japanese text in Notepad, use a font with both Korean and Japanese glyphs (e.g. Noto Sans KR)."
+Write-Host "Taskbar search box: this release is unsigned, so the candidate window stays hidden there (typing works)."
+Write-Host "  local-signing.ps1 in $Dest can enable it with a certificate made for this PC only. It adds a trusted"
+Write-Host "  root certificate to this PC (a security risk): read README.md there first. Updates remove it again."

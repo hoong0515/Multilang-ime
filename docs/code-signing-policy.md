@@ -15,6 +15,24 @@ from a tagged commit (`v*`):
 Third-party binaries shipped unchanged (the Microsoft Visual C++ runtime DLLs next to `mozc_stdio.exe`) keep their own signatures
 and are not re-signed. Product name and version in the signed files are "Multilang IME" and the release version.
 
+## Local signing (optional, this PC only)
+
+Because releases are unsigned, the candidate window helper cannot get UIAccess and stays hidden in the taskbar
+search box. [`installer/local-signing.ps1`](../installer/local-signing.ps1) can sign the installed
+`MultilangIME-CandWin.exe` with a certificate made on and for one PC. It adds a trusted root certificate, so it is
+not offered by the setup wizard or the settings app: it runs only from an administrator PowerShell, after a security
+notice, when the exact line `I accept the risk on <computer name>` is typed. The notice does not shift the risk to
+the user, so the script enforces these limits itself:
+
+- a new RSA-3072 key per run, created non-exportable in the machine store and deleted right after signing (also on
+  failure); the script checks that no private key is left
+- the certificate allows code signing only (critical EKU) and is not a CA (critical basic constraints `ca=0`), so it
+  cannot act as or issue a TLS certificate; valid for 3 years
+- only the public part goes to `LocalMachine\Root`; nothing is shipped in the package, and no PC shares a key
+- only `MultilangIME-CandWin.exe` in the registered install folder under Program Files (writable by administrators
+  only), with product name "Multilang IME", is signed
+- `-Disable` removes it; install (update) and uninstall remove it automatically
+
 ## Team roles
 
 | Role | Members |

@@ -65,6 +65,27 @@ install.cmd -Language en    (English)
 - 비밀번호·숫자·이메일·URL 입력칸에서는 자동으로 꺼집니다. 단, 앱이 입력칸 용도를 알려 주지 않으면 꺼지지 않을 수 있습니다. 그런 비밀번호 칸에서는 한/영 키로 English 고정(IME 끔)을 써 주세요.
 - 작업 표시줄 검색창의 후보창은 서명된 배포판에서만 보입니다 (후보창 대행 프로그램 `MultilangIME-CandWin.exe`가 UIAccess로 실행되어야 함). 서명 없는 판에서는 검색창에서 입력은 되지만 후보창이 가려집니다.
 
+## 검색창 후보창: 이 PC 전용 서명 (선택, 보안 위험 있음)
+
+서명 없는 판에서도 검색창에 후보창을 띄우고 싶다면, 이 PC에서만 믿는 인증서를 만들어 `MultilangIME-CandWin.exe`에 서명할 수 있습니다. **이 PC의 보안 설정(신뢰할 수 있는 루트 인증서)을 바꾸는 일**이라 설치 프로그램과 설정 화면에는 없고, 직접 관리자 PowerShell에서 실행하고 확인 문구를 쳐야 켜집니다.
+
+위험:
+- 이 인증서의 키로 서명된 파일은 이 PC에서 신뢰됩니다. 키는 이 PC에서 새로 만들고, 내보낼 수 없으며, 서명 직후 지웁니다. 다만 실행하는 몇 초 동안은 존재합니다.
+- 서명된 후보창 프로그램은 UIAccess 권한으로 실행되어, 관리자 창을 포함한 다른 창 위에 그리고 입력을 보낼 수 있습니다. 이 프로그램에 버그가 있으면 이 PC의 다른 프로그램이 악용할 여지가 있습니다.
+- 백신이나 회사 정책이 새 루트 인증서를 경고하거나 막을 수 있습니다. 회사·학교 PC에서는 쓰지 마세요.
+
+제한: 인증서는 코드 서명 전용이고 인증 기관(CA)이 아니어서, 키가 있어도 웹사이트(HTTPS) 인증서를 만들 수 없습니다. 설치 폴더의 그 파일 하나만 서명합니다. 업데이트·제거 때 인증서를 지우므로, 업데이트 후에는 다시 켜야 합니다.
+
+관리자 PowerShell에서:
+
+```
+powershell -ExecutionPolicy Bypass -File "C:\Program Files\MultilangIME\local-signing.ps1" -Status
+powershell -ExecutionPolicy Bypass -File "C:\Program Files\MultilangIME\local-signing.ps1" -Enable
+powershell -ExecutionPolicy Bypass -File "C:\Program Files\MultilangIME\local-signing.ps1" -Disable
+```
+
+`-Enable`은 안내를 보여 주고 `I accept the risk on <컴퓨터 이름>`을 그대로 쳐야 진행합니다. `-Disable`로 언제든 되돌립니다.
+
 ## 제거
 
 설치 폴더(`C:\Program Files\MultilangIME`)의 `uninstall.cmd`를 실행합니다. 설정·학습 기록까지 지우려면:

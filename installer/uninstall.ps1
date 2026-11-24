@@ -69,6 +69,9 @@ Step "stop backend and Mozc" {
         Where-Object { $_.Path -and $_.Path.StartsWith("$Dest\", [StringComparison]::OrdinalIgnoreCase) } |
         Stop-Process -Force
 }
+Step "remove local signing certificate, if any" {
+    if (Test-Path (Join-Path $Dest "local-signing.ps1")) { & (Join-Path $Dest "local-signing.ps1") -Disable -Quiet }
+}
 Step "unregister TIP" {
     if (Test-Path "$Dest\x86\multilang_tip.dll") { Start-Process "$env:windir\SysWOW64\regsvr32.exe" -ArgumentList "/s", "/u", "`"$Dest\x86\multilang_tip.dll`"" -Wait }
     if (Test-Path "$Dest\multilang_tip.dll") { Start-Process "$env:windir\System32\regsvr32.exe" -ArgumentList "/s", "/u", "`"$Dest\multilang_tip.dll`"" -Wait }
