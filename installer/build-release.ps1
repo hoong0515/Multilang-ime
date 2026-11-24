@@ -9,7 +9,7 @@
 #   mozc_stdio.exe + credits   mozc-helper\build.ps1 (Mozc checkout)
 #   VC runtime DLLs            the Visual Studio redist folder (found with vswhere)
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.2.0",
     [switch]$NoBuild,
     [string]$MozcHelper = "target\mozc-helper\mozc_stdio.exe",
     [string]$MozcCredits = "K:\mozc-build\mozc\src\data\installer\credits_en.html",

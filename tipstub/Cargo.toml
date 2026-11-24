@@ -1,6 +1,6 @@
 [package]
 name = "tipstub"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 # 등록되는 TSF DLL (multilang_tip.dll). 실제 입력기 코드(multilang_tip_impl.dll)를 읽어 COM 호출을 넘긴다.
