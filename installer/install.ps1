@@ -205,7 +205,8 @@ if ($perUser -and -not $NoLanguageList) {
 # 8. Programs and Features (Settings > Apps) entry, so it can be removed like any other app
 Step "Programs and Features entry" {
     $key = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MultilangIME"
-    $version = (Get-Item (Join-Path $Dest "multilang_tip.dll")).VersionInfo.ProductVersion
+    # the release version: backend.exe carries it (the TIP stub keeps its own fixed version, tipstub/build.rs)
+    $version = (Get-Item (Join-Path $Dest "backend.exe")).VersionInfo.ProductVersion
     $sizeKb = [int]((Get-ChildItem $Dest -Recurse -File | Measure-Object Length -Sum).Sum / 1KB)
     New-Item -Path $key -Force | Out-Null
     $values = @{
