@@ -19,7 +19,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "backend"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "embed-resource",
  "engine",
@@ -44,7 +44,7 @@ checksum = "776dfebd015e2d8732c684a2c71003674ccb49457b539b9e82151ba38e96dd7c"
 
 [[package]]
 name = "candhost"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "embed-resource",
  "ipc",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "engine"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "ipc"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -218,7 +218,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mozc"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "prost",
  "prost-build",
@@ -544,7 +544,7 @@ dependencies = [
 
 [[package]]
 name = "tip"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "embed-resource",
  "ipc",
@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "tipstub"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "embed-resource",
  "windows",

@@ -18,9 +18,9 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyProduct("Multilang IME")]
 [assembly: System.Reflection.AssemblyCompany("Multilang IME contributors")]
 [assembly: System.Reflection.AssemblyCopyright("GPL-3.0-or-later")]
-[assembly: System.Reflection.AssemblyVersion("0.2.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.2.1.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.2.1")]
+[assembly: System.Reflection.AssemblyVersion("0.2.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.2.2.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.2.2")]
 
 static class Program
 {
