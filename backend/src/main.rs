@@ -195,6 +195,7 @@ fn main() {
     settings::init(data_dir().join("settings.json"));
     lock::init(data_dir().join("lock.txt"));
     userdict::init(data_dir().join("user_dict.json"));
+    userdict::init_hidden(data_dir().join("hidden.json"));
     // 한자 사전은 시작할 때 백그라운드로 읽는다 (약 30만 항목)
     if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
         let learn = data_dir().join("hanja_learn.json");

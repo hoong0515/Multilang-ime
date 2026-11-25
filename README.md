@@ -28,7 +28,9 @@ A Windows IME that detects Korean, English and Japanese as you type, with no swi
 | Space / Enter | 확정 |
 | 왼쪽 Shift 탭 | 후보창 / 다음 후보 |
 | 숫자 1~9, ↑↓, PgUp/PgDn | 후보 고르기, 쪽 넘기기 |
-| Tab / Shift+Tab | 후보 언어 묶음 이동 |
+| Tab / Shift+Tab | 후보 묶음 이동 (맨 뒤 전각·기호) |
+| Ctrl+Enter / Ctrl+Delete (후보창) | 고른 후보를 사전에 넣기 / 다시 추천하지 않기 |
+| Esc | 입력 전체를 친 그대로(로마자)로, 한 번 더 누르면 취소 |
 | ← / → | 부분 이동 |
 | 한/영 (없으면 오른쪽 Alt 탭, 일본어 배열은 半角/全角) | 언어 고정 순환 (자동 → 한국어 → English → 日本語). 연달아 누르면 순환, 고정해 쓰다가 누르면 먼저 자동 |
 

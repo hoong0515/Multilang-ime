@@ -43,6 +43,7 @@ class SettingsForm : Form
     static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "multilang-ime");
     static readonly string FilePath = Path.Combine(Dir, "settings.json");
     static readonly string DictPath = Path.Combine(Dir, "user_dict.json");
+    static readonly string HiddenPath = Path.Combine(Dir, "hidden.json");
 
     Dictionary<string, object> data = new Dictionary<string, object>();
     readonly CheckBox ko = new CheckBox { Text = "한국어", AutoSize = true };
@@ -57,6 +58,7 @@ class SettingsForm : Form
     // 친 키는 IME 없이 그대로 받는다 (영문 키 그대로 등록)
     readonly TextBox dictKeys = new TextBox { Width = 130, ImeMode = ImeMode.Disable };
     readonly TextBox dictText = new TextBox { Width = 170 };
+    readonly ListView hidden = new ListView { View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false, Size = new Size(420, 400) };
 
     public SettingsForm(bool openDict = false)
     {
@@ -77,8 +79,10 @@ class SettingsForm : Form
         outer.Controls.Add(tabs);
         var general = new TabPage("일반") { AutoScroll = true, Padding = new Padding(6) };
         var dictPage = new TabPage("사용자 사전") { Padding = new Padding(6) };
+        var hiddenPage = new TabPage("숨긴 후보") { Padding = new Padding(6) };
         tabs.TabPages.Add(general);
         tabs.TabPages.Add(dictPage);
+        tabs.TabPages.Add(hiddenPage);
         if (openDict) tabs.SelectedTab = dictPage;
         var root = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
         general.Controls.Add(root);
@@ -121,13 +125,24 @@ class SettingsForm : Form
         dRemove.Click += (s, e) => { foreach (ListViewItem it in dict.SelectedItems) dict.Items.Remove(it); };
         dict.KeyDown += (s, e) => { if (e.KeyCode == Keys.Delete) foreach (ListViewItem it in dict.SelectedItems) dict.Items.Remove(it); };
         var dictBox = Flow(
-            new Label { Text = "치는 키(로마자, 두벌식 키, 영문)와 그때 나올 변환을 등록합니다.\n후보창 맨 앞 '사전' 묶음에 나오고, 첫 Shift 탭이 그 후보를 고릅니다.", AutoSize = true },
+            new Label { Text = "치는 키(로마자, 두벌식 키, 영문)와 그때 나올 변환을 등록합니다.\n후보창 맨 앞 '사전' 묶음에 나오고, 첫 Shift 탭이 그 후보를 고릅니다.\n후보창에서 후보를 고르고 Ctrl+Enter를 눌러도 여기에 들어갑니다.", AutoSize = true },
             dict,
             Row(new Label { Text = "친 키", AutoSize = true, Anchor = AnchorStyles.Left }, dictKeys,
                 new Label { Text = "변환", AutoSize = true, Anchor = AnchorStyles.Left }, dictText),
             Row(dAdd, dRemove),
             new Label { Text = "예: yrsk → よろしくお願いします, gh → GitHub, dlfma → 이름", AutoSize = true, ForeColor = SystemColors.GrayText });
         dictPage.Controls.Add(dictBox);
+
+        // 숨긴 후보: 후보창에서 Ctrl+Delete로 숨긴 것
+        hidden.Columns.Add("친 키", 140);
+        hidden.Columns.Add("숨긴 후보", 250);
+        var hRemove = new Button { Text = "선택한 것 다시 보이기", AutoSize = true };
+        hRemove.Click += (s, e) => { foreach (ListViewItem it in hidden.SelectedItems) hidden.Items.Remove(it); };
+        hidden.KeyDown += (s, e) => { if (e.KeyCode == Keys.Delete) foreach (ListViewItem it in hidden.SelectedItems) hidden.Items.Remove(it); };
+        hiddenPage.Controls.Add(Flow(
+            new Label { Text = "후보창에서 후보를 고르고 Ctrl+Delete를 누르면, 그 키로 쳤을 때 후보창에 다시 나오지 않습니다.\n목록에서 지우고 저장하면 다시 나옵니다.", AutoSize = true },
+            hidden,
+            hRemove));
 
         var save = new Button { Text = "저장", AutoSize = true, MinimumSize = new Size(80, 0) };
         var close = new Button { Text = "닫기", AutoSize = true, MinimumSize = new Size(80, 0), DialogResult = DialogResult.Cancel };
@@ -178,10 +193,25 @@ class SettingsForm : Form
 
     void LoadDict()
     {
+        LoadPairs(DictPath, dict, "사용자 사전");
+        LoadPairs(HiddenPath, hidden, "숨긴 후보");
+    }
+
+    static List<Dictionary<string, object>> Pairs(ListView view)
+    {
+        var entries = new List<Dictionary<string, object>>();
+        foreach (ListViewItem it in view.Items)
+            entries.Add(new Dictionary<string, object> { { "keys", it.Text }, { "text", it.SubItems[1].Text } });
+        return entries;
+    }
+
+    // [{keys, text}] 파일을 목록에 읽는다 (사용자 사전, 숨긴 후보)
+    void LoadPairs(string path, ListView view, string what)
+    {
         try
         {
-            if (!File.Exists(DictPath)) return;
-            var text = File.ReadAllText(DictPath, Encoding.UTF8).TrimStart('\uFEFF');
+            if (!File.Exists(path)) return;
+            var text = File.ReadAllText(path, Encoding.UTF8).TrimStart('\uFEFF');
             var list = new JavaScriptSerializer().DeserializeObject(text) as object[];
             if (list == null) return;
             foreach (var o in list)
@@ -190,12 +220,12 @@ class SettingsForm : Form
                 if (e == null) continue;
                 var k = Get(e, "keys") as string;
                 var t = Get(e, "text") as string;
-                if (!string.IsNullOrEmpty(k) && !string.IsNullOrEmpty(t)) dict.Items.Add(new ListViewItem(new[] { k, t }));
+                if (!string.IsNullOrEmpty(k) && !string.IsNullOrEmpty(t)) view.Items.Add(new ListViewItem(new[] { k, t }));
             }
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "사용자 사전을 읽지 못했습니다.\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, what + "을(를) 읽지 못했습니다.\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
@@ -267,10 +297,8 @@ class SettingsForm : Form
             Directory.CreateDirectory(Dir);
             var ser = new JavaScriptSerializer();
             WriteAtomic(FilePath, ser.Serialize(data));
-            var entries = new List<Dictionary<string, object>>();
-            foreach (ListViewItem it in dict.Items)
-                entries.Add(new Dictionary<string, object> { { "keys", it.Text }, { "text", it.SubItems[1].Text } });
-            WriteAtomic(DictPath, ser.Serialize(entries));
+            WriteAtomic(DictPath, ser.Serialize(Pairs(dict)));
+            if (hidden.Items.Count > 0 || File.Exists(HiddenPath)) WriteAtomic(HiddenPath, ser.Serialize(Pairs(hidden)));
             return true;
         }
         catch (Exception ex)

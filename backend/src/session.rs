@@ -40,9 +40,12 @@ const PICK_KEYS: u16 = PAGE as u16; // 숫자 1~9 (지금 쪽 안에서)
 /// 낱자로 흔히 쓰는 자모 (ㅋㅋ, ㅎㅎ, ㅠㅠ 등). 이것만 남는 후보는 정상 후보로 본다.
 const EXPRESSIVE_JAMO: &str = "ㅋㅎㅠㅜㄷㅇㄱㅅㅂㅈㄴㅊ";
 const MOZC_RETRY: Duration = Duration::from_secs(30);
-const FULLWIDTH: &str = "全角";
+const FULLWIDTH: &str = "전각";
 const HANJA: &str = "漢";
-const SYMBOL: &str = "記号";
+const SYMBOL: &str = "기호";
+/// 전각 로마자·기호 변형의 묶음. 언어 묶음과 섞이지 않게 후보창 맨 뒤에 둔다 (Tab으로 오간다).
+const SYM_GROUP: &str = "sym";
+const VK_DELETE: u16 = 0x2E;
 /// 가나 후보 표시 (후보창 일본어 묶음 맨 앞)
 const HIRAGANA: &str = "ひらがな";
 const KATAKANA: &str = "カタカナ";
@@ -695,7 +698,32 @@ fn symbol_choice(sym: &str, text: String, label: String) -> Choice {
         segments: vec![engine::detector::Segment { lang: None, keys: sym.to_string(), text: text.clone() }],
         score: 0.0,
     };
-    Choice { cand, texts: vec![text], mozc_pick: None, group: label.clone(), label }
+    let group = if label == FULLWIDTH || label == SYMBOL { SYM_GROUP.to_string() } else { label.clone() };
+    Choice { cand, texts: vec![text], mozc_pick: None, group, label }
+}
+
+/// 같은 묶음끼리 모은다 (처음 나온 순서대로, 기호·전각 묶음은 맨 뒤). 첫 후보는 그대로 맨 앞에 둔다.
+fn regroup(list: Vec<Choice>) -> Vec<Choice> {
+    let mut order: Vec<String> = Vec::new();
+    for c in &list {
+        if c.group != SYM_GROUP && !order.contains(&c.group) {
+            order.push(c.group.clone());
+        }
+    }
+    order.push(SYM_GROUP.to_string());
+    let first = list.first().map(|c| c.group.clone());
+    if let Some(f) = &first {
+        // 첫 후보(기본 표시)의 묶음을 맨 앞에
+        if let Some(i) = order.iter().position(|g| g == f) {
+            let g = order.remove(i);
+            order.insert(0, g);
+        }
+    }
+    let mut out = Vec::with_capacity(list.len());
+    for g in &order {
+        out.extend(list.iter().filter(|c| &c.group == g).cloned());
+    }
+    out
 }
 
 /// 사용자 사전 후보. 언어(문맥용)는 변환 글자로 정한다. 구간 언어는 비워 두어 Mozc 확정·학습을 거치지 않는다.
@@ -960,6 +988,10 @@ impl<'m> Session<'m> {
         if (self.open.is_some() || self.parts.is_some()) && (matches!(k.vk, VK_PRIOR..=VK_DOWN) || k.vk == VK_TAB) && !k.ctrl && !k.alt {
             return eat;
         }
+        // Ctrl+Delete: 후보창에서 고른 후보를 숨긴다
+        if self.open.is_some() && k.vk == VK_DELETE && k.ctrl && !k.alt {
+            return eat;
+        }
         match k.vk {
             VK_BACK | VK_SPACE | VK_RETURN | VK_ESCAPE => eat,
             _ => Response { flush_first: true, ..Default::default() },
@@ -1140,6 +1172,12 @@ impl<'m> Session<'m> {
                 }
                 self.commit(" ")
             }
+            VK_RETURN if k.ctrl && !k.alt => {
+                // Ctrl+Enter: 후보창에서 고른 후보를 사전 맨 앞에 넣고 확정
+                self.add_pick_to_dict();
+                self.commit("")
+            }
+            VK_DELETE if k.ctrl && !k.alt && self.open.is_some() => self.hide_pick(),
             VK_RETURN => self.commit(""),
             VK_ESCAPE => {
                 if self.open.is_some() || self.pinned.is_some() {
@@ -1154,6 +1192,48 @@ impl<'m> Session<'m> {
             }
             _ => Response::default(),
         }
+    }
+
+    /// Ctrl+Enter: 후보창(또는 숫자로 고른) 후보를 "지금 친 키 → 그 글자"로 사전 맨 앞에 넣는다.
+    /// 글자 조합일 때만 (기호 조합·부분 변환은 그냥 확정). 샌드박스·낮은 무결성 연결은 넣지 않는다.
+    fn add_pick_to_dict(&mut self) {
+        if !self.learn || self.keys.is_empty() || !self.sym.is_empty() || self.parts.is_some() {
+            return;
+        }
+        if self.open.is_none() && self.pinned.is_none() {
+            return;
+        }
+        let Some((c, _, _)) = self.current() else { return };
+        let text = c.text();
+        if crate::userdict::add(&self.keys, &text) {
+            crate::log("user_dict: added from candidate window");
+        }
+    }
+
+    /// Ctrl+Delete: 고른 후보를 이 키의 후보창에서 숨긴다 (사전 후보면 사전에서 뺀다). 창은 열어 둔다.
+    fn hide_pick(&mut self) -> Response {
+        if !self.learn || self.keys.is_empty() || !self.sym.is_empty() {
+            return self.respond();
+        }
+        let Some((list, sel)) = self.open.take() else { return self.respond() };
+        let Some(c) = list.get(sel).cloned() else {
+            self.open = Some((list, sel));
+            return self.respond();
+        };
+        if list.len() < 2 {
+            // 마지막 하나는 숨기지 않는다
+            self.open = Some((list, sel));
+            return self.respond();
+        }
+        let text = c.text();
+        let done = if c.group == DICT { crate::userdict::remove(&self.keys, &text) } else { crate::userdict::hide(&self.keys, &text) };
+        let mut list = list;
+        if done {
+            list.remove(sel);
+        }
+        let sel = sel.min(list.len() - 1);
+        self.open = Some((list, sel));
+        self.respond()
     }
 
     /// 왼쪽 Shift 탭: 후보창을 열거나 다음 후보로.
@@ -1248,10 +1328,12 @@ impl<'m> Session<'m> {
     fn candidate_list(&mut self) -> Vec<Choice> {
         if !self.sym.is_empty() {
             let sym = self.sym.clone();
-            return symbol_variants(&sym, self.prev == Some(Lang::Ja))
-                .into_iter()
-                .map(|(t, l)| symbol_choice(&sym, t, l))
-                .collect();
+            return regroup(
+                symbol_variants(&sym, self.prev == Some(Lang::Ja))
+                    .into_iter()
+                    .map(|(t, l)| symbol_choice(&sym, t, l))
+                    .collect(),
+            );
         }
         let keys = self.keys.clone();
         self.candidate_list_for(&keys, false)
@@ -1369,9 +1451,20 @@ impl<'m> Session<'m> {
                     let ch = self.choice(c);
                     let fw = fullwidth(&c.segments[0].keys);
                     add(&mut out, ch.clone());
-                    add(&mut out, Choice { texts: vec![fw], label: FULLWIDTH.into(), ..ch });
+                    add(&mut out, Choice { texts: vec![fw], label: FULLWIDTH.into(), group: SYM_GROUP.into(), ..ch });
                 }
             }
+        }
+        // 친 그대로(로마자): 판정 순위에 영어가 없어도 언제나 고를 수 있게
+        if !seen_langs.contains(&Lang::En) && !keys.is_empty() {
+            let raw = Candidate {
+                form: vec![(Lang::En, keys.chars().count())],
+                segments: vec![engine::detector::Segment { lang: Some(Lang::En), keys: keys.to_string(), text: keys.to_string() }],
+                score: 0.0,
+            };
+            let ch = Choice { texts: vec![keys.to_string()], cand: raw, mozc_pick: None, label: "en".into(), group: "en".into() };
+            add(&mut out, ch.clone());
+            add(&mut out, Choice { texts: vec![fullwidth(keys)], label: FULLWIDTH.into(), group: SYM_GROUP.into(), ..ch });
         }
         // 여러 언어가 섞인 후보 (깨진 한글이 섞인 것은 맨 뒤)
         let mut mixed = 0;
@@ -1390,7 +1483,15 @@ impl<'m> Session<'m> {
         for ch in broken.into_iter().take(2) {
             add(&mut out, Choice { group: "mix".into(), ..ch });
         }
-        out
+        // Ctrl+Delete로 숨긴 후보는 빼되, 하나도 남지 않게 하지는 않는다 (사전 후보는 사전에서 따로 뺀다)
+        let hidden = crate::userdict::hidden(keys);
+        if !hidden.is_empty() {
+            let kept: Vec<Choice> = out.iter().filter(|c| c.group == DICT || !hidden.contains(&c.text())).cloned().collect();
+            if !kept.is_empty() {
+                out = kept;
+            }
+        }
+        regroup(out)
     }
 
     /// 지금 표시 중인 결과를 부분으로 나눈다: 언어 구간마다, 일본어는 Mozc 문절마다. 두 부분 이상일 때만.
@@ -1753,6 +1854,66 @@ mod tests {
         assert_eq!(h.count("fmf", &picked), PICK_WEIGHT as f64);
         assert_eq!(h.count("APIfmf", &whole), PICK_WEIGHT as f64);
         assert_eq!(h.count("APIfmf", &shown), 1.0);
+    }
+
+    #[test]
+    fn fullwidth_and_symbols_grouped_last() {
+        let Some(m) = models() else { return };
+        let mut s = session(&m);
+        type_keys(&mut s, "arigatou");
+        s.shift_tap();
+        let (list, _) = s.open.as_ref().expect("window");
+        let first_sym = list.iter().position(|c| c.group == SYM_GROUP).expect("fullwidth candidate");
+        assert!(list[first_sym..].iter().all(|c| c.group == SYM_GROUP), "{:?}", list.iter().map(|c| (&c.group, c.text())).collect::<Vec<_>>());
+        assert_eq!(list[first_sym].label, FULLWIDTH);
+        // 일본어 묶음에는 전각 로마자가 없다
+        assert!(list.iter().filter(|c| c.group == "ja").all(|c| c.label != FULLWIDTH));
+        // 기호 조합도 기호·전각 변형은 맨 뒤
+        s.reset();
+        type_keys(&mut s, "-");
+        let list = s.candidate_list();
+        let first_sym = list.iter().position(|c| c.group == SYM_GROUP).expect("symbol variants");
+        assert!(list[first_sym..].iter().all(|c| c.group == SYM_GROUP));
+    }
+
+    #[test]
+    fn typed_as_is_candidate() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner()); // 숨긴 후보 목록을 함께 쓰는 시험과 겹치지 않게
+        let Some(m) = models() else { return };
+        let mut s = session(&m);
+        for keys in ["dkssud", "watashiha"] {
+            s.reset();
+            type_keys(&mut s, keys);
+            let list = s.candidate_list();
+            let i = list.iter().position(|c| c.text() == keys).unwrap_or_else(|| panic!("{keys}: no as-typed candidate"));
+            assert_eq!(list[i].group, "en");
+        }
+    }
+
+    #[test]
+    fn ctrl_delete_hides_candidate() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(m) = models() else { return };
+        let path = std::env::temp_dir().join(format!("multilang-ime-test-{}-hidden.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        crate::userdict::hidden_for_test(path.clone());
+        let mut s = session(&m);
+        type_keys(&mut s, "dkssud");
+        s.shift_tap();
+        let (list, sel) = s.open.clone().expect("window");
+        let gone = list[sel].text();
+        let ctrl_del = Key { vk: VK_DELETE, shift: false, caps: false, ctrl: true, alt: false };
+        assert!(s.test(&ctrl_del).eaten);
+        s.key(&ctrl_del);
+        let (after, _) = s.open.as_ref().expect("window stays open");
+        assert_eq!(after.len(), list.len() - 1);
+        assert!(after.iter().all(|c| c.text() != gone));
+        // 다음에 같은 키를 쳐도 후보창에 없다
+        s.reset();
+        type_keys(&mut s, "dkssud");
+        assert!(s.candidate_list().iter().all(|c| c.text() != gone));
+        crate::userdict::hidden_for_test(std::env::temp_dir().join("multilang-ime-test-none.json"));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
