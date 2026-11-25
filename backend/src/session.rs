@@ -702,6 +702,26 @@ fn symbol_choice(sym: &str, text: String, label: String) -> Choice {
     Choice { cand, texts: vec![text], mozc_pick: None, group, label }
 }
 
+/// Mozc가 일본어 후보로 주는 로마자 변형 (arigatou, ARIGATOU, Arigatou, ａｒｉｇａｔｏｕ)을 일본어 묶음 대신
+/// 영어 / 전각·기호 묶음에 넣는다. 반각 로마자(글자·숫자만) → 영어, 전각 로마자(글자·숫자만) → 전각.
+/// 기호가 섞인 것(m(_ _)m 같은 얼굴 문자)은 일본어로 둔다.
+fn latin_variant(keys: &str, text: &str) -> Option<Choice> {
+    let half = !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric()) && text.chars().any(|c| c.is_ascii_alphabetic());
+    let full = !text.is_empty()
+        && text.chars().all(|c| matches!(c, '\u{FF10}'..='\u{FF19}' | '\u{FF21}'..='\u{FF3A}' | '\u{FF41}'..='\u{FF5A}'))
+        && text.chars().any(|c| !matches!(c, '\u{FF10}'..='\u{FF19}'));
+    if !half && !full {
+        return None;
+    }
+    let cand = Candidate {
+        form: vec![(Lang::En, keys.chars().count())],
+        segments: vec![engine::detector::Segment { lang: Some(Lang::En), keys: keys.to_string(), text: text.to_string() }],
+        score: 0.0,
+    };
+    let (label, group) = if half { ("en", "en") } else { (FULLWIDTH, SYM_GROUP) };
+    Some(Choice { cand, texts: vec![text.to_string()], mozc_pick: None, label: label.into(), group: group.into() })
+}
+
 /// 같은 묶음끼리 모은다 (처음 나온 순서대로, 기호·전각 묶음은 맨 뒤). 첫 후보는 그대로 맨 앞에 둔다.
 fn regroup(list: Vec<Choice>) -> Vec<Choice> {
     let mut order: Vec<String> = Vec::new();
@@ -1425,7 +1445,12 @@ impl<'m> Session<'m> {
                             let rest: String = conv.segments.iter().skip(1).cloned().collect();
                             for (id, v) in conv.candidates.iter().take(MAX_JA) {
                                 any = true;
-                                let ch = Choice { cand: c.clone(), texts: vec![format!("{v}{rest}")], mozc_pick: Some(*id), label: "ja".into(), group: "ja".into() };
+                                let text = format!("{v}{rest}");
+                                if let Some(ch) = latin_variant(&keys, &text) {
+                                    add(&mut out, ch);
+                                    continue;
+                                }
+                                let ch = Choice { cand: c.clone(), texts: vec![text], mozc_pick: Some(*id), label: "ja".into(), group: "ja".into() };
                                 add(&mut out, ch);
                             }
                         }
@@ -1874,6 +1899,23 @@ mod tests {
         let list = s.candidate_list();
         let first_sym = list.iter().position(|c| c.group == SYM_GROUP).expect("symbol variants");
         assert!(list[first_sym..].iter().all(|c| c.group == SYM_GROUP));
+    }
+
+    #[test]
+    fn mozc_latin_variants_leave_japanese_group() {
+        let half = latin_variant("arigatou", "ARIGATOU").expect("half");
+        assert_eq!((half.group.as_str(), half.label.as_str()), ("en", "en"));
+        assert_eq!(half.cand.form, vec![(Lang::En, 8)]);
+        let full = latin_variant("arigatou", "ａｒｉｇａｔｏｕ").expect("full");
+        assert_eq!((full.group.as_str(), full.label.as_str()), (SYM_GROUP, FULLWIDTH));
+        // 얼굴 문자·가나·한자·숫자만은 그대로 일본어
+        assert!(latin_variant("arigatou", "m(_ _)m").is_none());
+        assert!(latin_variant("arigatou", "有難う").is_none());
+        assert!(latin_variant("ichi", "１").is_none());
+        // 묶음을 나누면 영어 묶음과 전각 묶음으로 간다
+        let ja = Choice { group: "ja".into(), label: "ja".into(), ..full.clone() };
+        let list = regroup(vec![ja.clone(), full.clone(), half.clone(), ja]);
+        assert_eq!(list.iter().map(|c| c.group.as_str()).collect::<Vec<_>>(), vec!["ja", "ja", "en", SYM_GROUP]);
     }
 
     #[test]
