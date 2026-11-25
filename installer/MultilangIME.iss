@@ -9,7 +9,7 @@
 ; Silent install: MultilangIME-<ver>-setup.exe /VERYSILENT /INPUTLANG=ko|ja|en
 
 #ifndef Version
-  #define Version "0.2.2"
+  #define Version "0.2.3"
 #endif
 #ifndef PkgDir
   #define PkgDir "..\dist\MultilangIME-" + Version
