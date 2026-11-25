@@ -1,5 +1,11 @@
 # Changelog
 
+## 다음 판 (미출시) / Unreleased
+
+- 갱신: TIP stub(`multilang_tip.dll`)은 패키지 버전 대신 자체 버전(1.0.0)을 달고 재현 가능하게 링크(`/Brepro`)해,
+  stub 코드가 그대로면 판이 바뀌어도 같은 파일로 빌드된다. 업데이트 때 stub을 바꾸거나 재부팅 삭제를 예약하지 않는다.
+  (Rust 컴파일러가 바뀌면 stub도 한 번 바뀐다.)
+
 ## v0.2.1 (2026-11-25)
 
 - 설치: 이 PC 전용 서명(`local-signing.ps1`)을 켜 둔 PC에서 setup.exe로 업데이트하면 코드 1로 실패하던 문제.

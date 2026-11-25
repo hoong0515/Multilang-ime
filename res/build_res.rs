@@ -3,6 +3,13 @@
 #[allow(dead_code)]
 fn embed_version_resource(description: &str, file_name: &str, is_dll: bool, with_icon: bool, extra_icons: &[(u16, &str)]) {
     let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
+    embed_version_resource_as(&version, description, file_name, is_dll, with_icon, extra_icons);
+}
+
+/// Same, with an explicit version (the TIP stub keeps its own version so that its file does not change per release).
+#[allow(dead_code)]
+fn embed_version_resource_as(version: &str, description: &str, file_name: &str, is_dll: bool, with_icon: bool, extra_icons: &[(u16, &str)]) {
+    let version = version.to_string();
     let mut nums: Vec<u16> = version.split(['.', '-', '+']).filter_map(|p| p.parse().ok()).collect();
     nums.resize(4, 0);
     let commas = format!("{},{},{},{}", nums[0], nums[1], nums[2], nums[3]);
