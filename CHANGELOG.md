@@ -1,6 +1,6 @@
 # Changelog
 
-## 다음 판 (미출시) / Unreleased
+## v0.2.4 (2026-11-25)
 
 - 후보창: Mozc가 일본어 후보로 주던 로마자 변형(arigatou, ARIGATOU, Arigatou)은 영어 묶음, 전각 로마자(ａｒｉｇａｔｏｕ)는 전각·기호 묶음으로
 - 설치: 앱 목록 버전을 backend.exe에서 읽음 (stub의 1.0.0이 보이던 문제, `139a94c`)
