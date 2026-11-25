@@ -172,8 +172,10 @@ begin
   Script := ExpandConstant('{tmp}\pkg\install.ps1');
   Log := ExpandConstant('{tmp}\install-log.txt');
   // install.ps1 throws on any failure ($ErrorActionPreference = Stop): exit 1 then, with the error in the log
+  // UTF-8, not the UTF-16 that *> writes: LastLines reads the file as 8-bit text, and UTF-16 NULs cut the
+  // failure message short (it then showed no log lines and no log path)
   Params := '-NoProfile -ExecutionPolicy Bypass -Command "try { & ' + Quote(Script) + ' -Language ' + SelectedLang() +
-    ' *> ' + Quote(Log) + '; exit 0 } catch { $_ | Out-File -Append ' + Quote(Log) + '; exit 1 }"';
+    ' *>&1 | Out-File -Encoding utf8 ' + Quote(Log) + '; exit 0 } catch { $_ | Out-File -Append -Encoding utf8 ' + Quote(Log) + '; exit 1 }"';
   WizardForm.StatusLabel.Caption := CustomMessage('Running');
   InstallOk := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, ExpandConstant('{tmp}\pkg'),
     SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);

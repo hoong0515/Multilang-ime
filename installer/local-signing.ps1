@@ -47,9 +47,15 @@ function Remove-LocalSigning {
     }
     if (Test-Path $RegKey) {
         Remove-Item $RegKey -Force
-        $parent = Split-Path $RegKey
-        $k = Get-Item $parent -ErrorAction SilentlyContinue
-        if ($k -and $k.SubKeyCount -eq 0 -and $k.ValueCount -eq 0) { Remove-Item $parent -Force }
+    }
+    # the empty HKLM\SOFTWARE\MultilangIME left behind: tidy-up only, never a reason to fail (an install or
+    # update calls this; removing it was refused with "registry access not allowed" when run from setup.exe)
+    $parent = Split-Path $RegKey
+    try {
+        $k = Get-Item $parent -ErrorAction Stop
+        if ($k.SubKeyCount -eq 0 -and $k.ValueCount -eq 0) { Remove-Item $parent -Force -ErrorAction Stop }
+    } catch {
+        if (Test-Path $parent) { Say "  (left the empty key $parent : $($_.Exception.Message))" }
     }
     return $n
 }
